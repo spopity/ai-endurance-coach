@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the Intervals.icu API every 15 minutes (AI Coach v1)
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

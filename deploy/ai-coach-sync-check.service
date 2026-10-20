@@ -1,0 +1,13 @@
+[Unit]
+Description=AI Coach v1 - Intervals.icu full-history sync check (imports missing records)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ai-coach-v1
+ExecStart=/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/scripts/check_intervals_sync.py --fix --notify
+# Exit 1 = gaps that couldn't be fixed (already reported via Telegram) - don't mark the unit failed for that.
+SuccessExitStatus=1
+StandardOutput=journal
+StandardError=journal

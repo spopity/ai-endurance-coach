@@ -1,0 +1,13 @@
+[Unit]
+Description=AI Coach v1 - sync activity names from Strava to Intervals.icu and the DB
+After=network-online.target ai-coach-sync-check.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ai-coach-v1
+ExecStart=/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/scripts/sync_strava_names.py --notify
+# Exit 1 = some renames failed (already reported via Telegram) - don't mark the unit failed for that.
+SuccessExitStatus=1
+StandardOutput=journal
+StandardError=journal

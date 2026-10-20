@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly Strava activity-name sync for AI Coach v1
+
+[Timer]
+# After the 03:30 Intervals.icu sync check, so newly imported activities get renamed too.
+OnCalendar=*-*-* 04:15:00
+RandomizedDelaySec=10min
+# Run on next boot if the machine was off at 04:15.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

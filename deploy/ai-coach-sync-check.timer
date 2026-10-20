@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Intervals.icu sync check for AI Coach v1
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=10min
+# Run on next boot if the machine was off at 03:30.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

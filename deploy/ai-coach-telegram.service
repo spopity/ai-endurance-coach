@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Coach v1 - Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai-coach-v1
+ExecStart=/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/telegram_bot.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

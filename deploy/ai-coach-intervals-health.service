@@ -1,0 +1,13 @@
+[Unit]
+Description=AI Coach v1 - Intervals.icu API health check (Telegram alert when down / recovered)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ai-coach-v1
+ExecStart=/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/scripts/check_intervals_api.py --notify
+# Exit 1 = API down - already logged and reported via Telegram, don't mark the unit failed for that.
+SuccessExitStatus=1
+StandardOutput=journal
+StandardError=journal

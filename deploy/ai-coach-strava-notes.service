@@ -1,0 +1,13 @@
+[Unit]
+Description=AI Coach v1 - post coach notes to new Strava activity descriptions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ai-coach-v1
+ExecStart=/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/scripts/post_strava_notes.py
+# Exit 1 = some notes failed - they are retried on the next run, don't mark the unit failed for that.
+SuccessExitStatus=1
+StandardOutput=journal
+StandardError=journal

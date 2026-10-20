@@ -1,0 +1,8 @@
+{
+  "token_type": "Bearer",
+  "access_token": "YOUR_STRAVA_ACCESS_TOKEN",
+  "expires_at": 0,
+  "expires_in": 21600,
+  "refresh_token": "YOUR_STRAVA_REFRESH_TOKEN",
+  "scope": "read,activity:write,activity:read_all"
+}

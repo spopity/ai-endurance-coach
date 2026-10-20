@@ -1,0 +1,11 @@
+{
+  "token": "YOUR_GOOGLE_ACCESS_TOKEN",
+  "refresh_token": "YOUR_GOOGLE_REFRESH_TOKEN",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "client_id": "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+  "client_secret": "YOUR_GOOGLE_OAUTH_CLIENT_SECRET",
+  "scopes": ["https://www.googleapis.com/auth/calendar.readonly"],
+  "universe_domain": "googleapis.com",
+  "account": "",
+  "expiry": "2026-01-01T00:00:00Z"
+}

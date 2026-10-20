@@ -1,0 +1,25 @@
+# Secrets - never commit (see .env.example for the variable names)
+.env
+credentials.json
+token.json
+withings_tokens.json
+strava_tokens.json
+
+# Runtime state and logs
+logs/
+state/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Dashboard build output and dependencies (rebuild with: cd web && npm install && npm run build)
+web/node_modules/
+web/dist/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.tsbuildinfo

@@ -1,0 +1,8 @@
+{
+  "userid": "YOUR_WITHINGS_USER_ID",
+  "access_token": "YOUR_WITHINGS_ACCESS_TOKEN",
+  "refresh_token": "YOUR_WITHINGS_REFRESH_TOKEN",
+  "scope": "user.metrics",
+  "expires_in": 10800,
+  "token_type": "Bearer"
+}

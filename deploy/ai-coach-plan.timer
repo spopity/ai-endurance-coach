@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly adaptive training plan update for AI Coach v1
+
+[Timer]
+# After the 03:30 Intervals.icu sync check, so last week's data is complete.
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

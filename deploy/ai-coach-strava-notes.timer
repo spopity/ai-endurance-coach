@@ -1,0 +1,11 @@
+[Unit]
+Description=Post coach notes to new Strava activities every 10 minutes (AI Coach v1)
+
+[Timer]
+# New activities arrive via the 30-min Intervals.icu sync; checking every 10 min keeps the
+# note close behind, and an activity not yet on Strava is simply retried next time.
+OnCalendar=*:0/10
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
