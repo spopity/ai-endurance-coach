@@ -1,16 +1,17 @@
 """
-Reconciles the database against Intervals.icu over the FULL history:
-activities by ID, wellness by day.
+Reconciles the database against Intervals.icu over the last DEFAULT_DAYS days
+(--days N, or --full for the whole history): activities by ID, wellness by day.
 
 The regular sync only looks back a few days by activity date, so anything
 uploaded late (e.g. a holiday ride synced a week later) or lost to a failed
 sync never arrives. This script finds those gaps and, with --fix, imports
-exactly the missing records.
+exactly the missing records. Older history is settled; --full re-checks it.
 
 Run:
     python scripts/check_intervals_sync.py            # report only
     python scripts/check_intervals_sync.py --fix      # import anything missing
     python scripts/check_intervals_sync.py --fix --notify   # + Telegram message if gaps were found
+    python scripts/check_intervals_sync.py --full     # the whole history instead of the last 15 days
 
 Exit code: 0 = in sync (or every gap fixed), 1 = gaps remain, 2 = error.
 Records that exist in the DB but no longer on Intervals.icu are reported only,
@@ -20,7 +21,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 import psycopg2
 
@@ -37,35 +38,39 @@ from import_profile import sync_profile  # noqa: E402
 
 logger = logging.getLogger("AI_COACH_V1.check_sync")
 
-# Far enough back to cover the whole Intervals.icu history (oldest activity is 2013).
+DEFAULT_DAYS = 15
+# --full: far enough back to cover the whole Intervals.icu history (oldest activity is 2013).
 HISTORY_START = date(2000, 1, 1)
 EXAMPLES_SHOWN = 10
 
 
-def _history_days() -> int:
-    return (date.today() - HISTORY_START).days
-
-
-def check_activities(conn, env: dict) -> dict:
-    remote = fetch_activities(env["INTERVALS_ATHLETE_ID"], env["INTERVALS_API_KEY"], _history_days())
+def check_activities(conn, env: dict, days: int) -> dict:
+    since = date.today() - timedelta(days=days - 1)
+    remote = [a for a in fetch_activities(env["INTERVALS_ATHLETE_ID"], env["INTERVALS_API_KEY"], days)
+              if str(a.get("start_date_local") or "")[:10] >= since.isoformat()]
     with conn.cursor() as cur:
-        cur.execute("SELECT external_id FROM activities WHERE source = 'intervals_icu';")
-        local = {r[0] for r in cur.fetchall()}
+        cur.execute("SELECT external_id, start_time FROM activities WHERE source = 'intervals_icu';")
+        rows = cur.fetchall()
+    known = {r[0] for r in rows}
+    local = {r[0]: r[1].date() for r in rows if r[1].date() >= since}
     remote_ids = {str(a["id"]) for a in remote}
-    missing = sorted((a for a in remote if str(a["id"]) not in local), key=lambda a: a.get("start_date_local") or "")
+    missing = sorted((a for a in remote if str(a["id"]) not in known), key=lambda a: a.get("start_date_local") or "")
     return {
         "remote_count": len(remote),
         "local_count": len(local),
         "missing": missing,
-        "db_only": sorted(local - remote_ids),
+        # Skip the window's first day: Intervals.icu dates are local, the DB's are UTC.
+        "db_only": sorted(i for i, d in local.items() if d > since and i not in remote_ids),
         "describe": lambda a: f"{a['id']} {str(a.get('start_date_local'))[:10]} {a.get('type')} - {a.get('name')}",
     }
 
 
-def check_wellness(conn, env: dict) -> dict:
-    remote = fetch_wellness(env["INTERVALS_ATHLETE_ID"], env["INTERVALS_API_KEY"], _history_days())
+def check_wellness(conn, env: dict, days: int) -> dict:
+    since = date.today() - timedelta(days=days - 1)
+    remote = [w for w in fetch_wellness(env["INTERVALS_ATHLETE_ID"], env["INTERVALS_API_KEY"], days)
+              if str(w["id"]) >= since.isoformat()]
     with conn.cursor() as cur:
-        cur.execute("SELECT day FROM daily_metrics;")
+        cur.execute("SELECT day FROM daily_metrics WHERE day >= %s;", (since,))
         local = {r[0].isoformat() for r in cur.fetchall()}
     remote_days = {str(w["id"]) for w in remote}
     missing = sorted((w for w in remote if str(w["id"]) not in local), key=lambda w: str(w["id"]))
@@ -93,18 +98,21 @@ def report(name: str, result: dict) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check the DB has every Intervals.icu activity and wellness day.")
+    parser = argparse.ArgumentParser(description="Check the DB has every Intervals.icu activity and wellness day of the last days.")
     parser.add_argument("--fix", action="store_true", help="import missing records")
     parser.add_argument("--notify", action="store_true", help="send a Telegram message when gaps are found")
+    parser.add_argument("--days", type=int, default=DEFAULT_DAYS, help=f"days back to check (default {DEFAULT_DAYS})")
+    parser.add_argument("--full", action="store_true", help="check the whole history instead")
     args = parser.parse_args()
+    days = (date.today() - HISTORY_START).days if args.full else args.days
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
     env = load_env()
     conn = psycopg2.connect(env["DATABASE_URL"])
     try:
         checks = {
-            "Activities": (check_activities(conn, env), upsert_activities),
-            "Wellness": (check_wellness(conn, env), upsert_wellness),
+            "Activities": (check_activities(conn, env, days), upsert_activities),
+            "Wellness": (check_wellness(conn, env, days), upsert_wellness),
         }
         lines, gaps_found, gaps_remaining = [], False, False
         for name, (result, upsert) in checks.items():

@@ -1,5 +1,5 @@
 [Unit]
-Description=AI Coach v1 - nightly catch-up: last 30 days from Garmin, then the Intervals.icu full-history check
+Description=AI Coach v1 - nightly catch-up: the last 15 days from Garmin and from Intervals.icu
 After=network-online.target
 Wants=network-online.target
 
@@ -8,7 +8,8 @@ Type=oneshot
 WorkingDirectory=/opt/ai-coach-v1
 # Garmin health data for days the 5-day sync missed (a watch synced late, e.g. after a trip).
 # The leading "-" keeps a Garmin failure (expired key, rate limit) from skipping the Intervals.icu check.
-ExecStart=-/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/ingest/import_garmin.py --days 30
+# Both look back 15 days; for the whole Intervals.icu history run check_intervals_sync.py --full by hand.
+ExecStart=-/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/ingest/import_garmin.py --days 15
 ExecStart=/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/scripts/check_intervals_sync.py --fix --notify
 # Exit 1 = gaps that couldn't be fixed (already reported via Telegram) - don't mark the unit failed for that.
 SuccessExitStatus=1

@@ -37,7 +37,7 @@ lists **every file in the project** with what it does and how it affects the who
 | Data sync | host crontab, every 30 min: `POST /sync-data` | Pulls the last 5 days of activities and fitness from Intervals.icu and health data from Garmin |
 | Strava notes | `ai-coach-strava-notes.timer`, every 10 min | Writes a coach note into each new activity's Strava description |
 | Intervals.icu health | `ai-coach-intervals-health.timer`, every 15 min | Sends a Telegram alert when the API goes down or recovers |
-| Full sync check | `ai-coach-sync-check.timer`, 03:30 nightly | Re-imports the last 30 days from Garmin, then finds and imports any Intervals.icu records the 5-day sync missed |
+| Sync check | `ai-coach-sync-check.timer`, 03:30 nightly | Re-imports the last 15 days from Garmin, then finds and imports any Intervals.icu records of the last 15 days the 5-day sync missed |
 | Adaptive plan | `ai-coach-plan.timer`, 04:00 nightly | Recomputes `training_blocks` from the training done; Telegram message when this week's phase changes |
 | Strava name sync | `ai-coach-strava-names.timer`, 04:15 nightly | Copies activity names from Strava (last 6 months) to Intervals.icu and the database |
 
@@ -108,7 +108,7 @@ These recurring ideas explain most of the code:
   eFTP into `athlete_profile`, so these values are edited in one place (Intervals.icu).
 - `core/chat.run_sync()` runs all four in-process. It is called by `/sync-data` (cron),
   the dashboard and Telegram `/sync` buttons, and before the morning briefing.
-- `scripts/check_intervals_sync.py` reconciles the full history every night. Late
+- `scripts/check_intervals_sync.py` reconciles the last 15 days every night (`--full` for the whole history). Late
   uploads (a holiday synced a week later) fall outside the 5-day window otherwise.
 - `scripts/sync_strava_names.py` treats Strava as the source of truth for names: you
   rename on Strava, and the name is written to Intervals.icu and the database. It only
@@ -494,7 +494,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `post_strava_notes.py` | CLI: post pending notes, `--dry-run`, `--activity` for one activity | Run by the Strava-notes timer |
 | `sync_strava_names.py` | Matches Strava (last 6 months, `--full` for all) to local activities and pushes Strava names to Intervals.icu and the database | Run by the nightly name timer |
 | `backfill_strava_history.py` | One-time: uploads Strava-only activities to Intervals.icu (TCX from streams), links double recordings, re-imports the DB; re-runnable, report in `state/strava_backfill_report.txt` | Run once by hand (2026-10-11) |
-| `check_intervals_sync.py` | Full-history reconciliation of activities and wellness, `--fix`, `--notify` | Run by the nightly sync-check timer |
+| `check_intervals_sync.py` | Reconciliation of activities and wellness over the last 15 days (`--days N`, `--full`), `--fix`, `--notify` | Run by the nightly sync-check timer |
 | `check_intervals_api.py` | One-request API health probe; alerts only on a state change | Run by the 15-min health timer |
 
 ### `db/migrations/`: schema history (applied in order)
@@ -526,7 +526,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `ai-coach-telegram.service` | `telegram_bot.py` (a separate process, so a bot crash never takes down the web UI) |
 | `ai-coach-strava-notes.service` / `.timer` | `post_strava_notes.py` every 10 min |
 | `ai-coach-intervals-health.service` / `.timer` | `check_intervals_api.py --notify` every 15 min |
-| `ai-coach-sync-check.service` / `.timer` | Nightly at 03:30: `import_garmin.py --days 30` (a failure doesn't stop the next step), then `check_intervals_sync.py --fix --notify` |
+| `ai-coach-sync-check.service` / `.timer` | Nightly at 03:30: `import_garmin.py --days 15` (a failure doesn't stop the next step), then `check_intervals_sync.py --fix --notify` (last 15 days) |
 | `ai-coach-strava-names.service` / `.timer` | `sync_strava_names.py --notify` nightly at 04:15 |
 
 ### `web/`: the React dashboard
@@ -589,7 +589,7 @@ venv/bin/python scripts/post_strava_notes.py --dry-run
 # apply new migrations
 venv/bin/python scripts/create_database.py
 # check data completeness against Intervals.icu
-venv/bin/python scripts/check_intervals_sync.py
-# re-import Garmin health data by hand (the nightly job covers the last 30 days)
+venv/bin/python scripts/check_intervals_sync.py          # last 15 days; --full for everything
+# re-import Garmin health data by hand (the nightly job covers the last 15 days)
 venv/bin/python ingest/import_garmin.py --days 30
 ```

@@ -345,7 +345,7 @@ cd web && npm run dev     # Vite dev server; proxies /api to localhost:8000
 | `ai-coach-telegram.service` | The Telegram bot |
 | `ai-coach-strava-notes.timer` | Coach notes on new Strava activities, every 10 min |
 | `ai-coach-intervals-health.timer` | Intervals.icu API health check (Telegram alert on outage), every 15 min |
-| `ai-coach-sync-check.timer` | Nightly at 03:30: the last 30 days from Garmin, then a full reconciliation with Intervals.icu |
+| `ai-coach-sync-check.timer` | Nightly at 03:30: the last 15 days from Garmin and from Intervals.icu (imports anything the regular sync missed) |
 | `ai-coach-plan.timer` | Nightly adaptive-plan update, 04:00 |
 | `ai-coach-strava-names.timer` | Nightly Strava → Intervals.icu name sync, 04:15 |
 
@@ -457,7 +457,7 @@ sudo systemctl restart ai-coach-v1 ai-coach-telegram
 cd web && npm run build
 # apply new migrations after pulling an update
 venv/bin/python scripts/create_database.py
-# check the DB holds everything Intervals.icu has (add --fix to import gaps)
+# check the DB holds everything Intervals.icu has from the last 15 days (--fix imports gaps, --full checks all history)
 venv/bin/python scripts/check_intervals_sync.py
 # preview Strava notes without posting
 venv/bin/python scripts/post_strava_notes.py --dry-run
