@@ -7,11 +7,14 @@ from daily_metrics instead of re-deriving them from a raw TSS history.
 import json
 import logging
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from core.db import get_connection
 from core.focus import adjust_focus_text, get_focus
 from core.gym import gym_focus
+from core import availability
+from core.feedback import context as feedback_context
+from core.periodization import GOAL_NO_RACE, return_status, training_days
 
 logger = logging.getLogger("AI_COACH_V1.metrics")
 
@@ -46,7 +49,47 @@ def load_athlete_profile(conn) -> dict:
         if not row:
             logger.warning("athlete_profile is empty - using hardcoded fallback.")
             return {"ftp": 250, "fthr": 165, "weight_kg": 75}
-        return _clean_row(dict(row))
+        profile = _clean_row(dict(row))
+        profile.update(training_ftp(cur, profile.get("ftp"), profile.get("eftp")))
+        return profile
+
+
+# The FTP that targets are built on, following the test rhythm of every 6-8 weeks: the set
+# FTP (Intervals.icu) is trusted while it is fresh; from FTP_TEST_DUE_DAYS a test is
+# suggested, and once it hasn't been updated or retested for EFTP_FALLBACK_DAYS,
+# Intervals.icu's eFTP (from recent maximal efforts) is used instead until the next test.
+FTP_TEST_DUE_DAYS = 42          # 6 weeks: time for a test
+EFTP_FALLBACK_DAYS = 56         # 8 weeks without one: train on eFTP
+FTP_TEST_NAME = re.compile(r"\b(ftp|ramp)\b.*\btest\b|\btest\b.*\bftp\b|\b20 ?min(ute)?s? test\b", re.I)
+CYCLING_TYPES = ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide")
+
+
+def training_ftp(cur, ftp, eftp) -> dict:
+    """{ftp (the one to train with), ftp_set, ftp_source, ftp_updated, ftp_age_days, ftp_test_due}.
+    'Updated' is the later of: the first ride with the current set FTP (Intervals.icu stamps
+    each activity with the FTP at the time) and the last ride named like an FTP test."""
+    out = {"ftp_set": ftp, "ftp_source": "set", "ftp_updated": None, "ftp_age_days": None, "ftp_test_due": False}
+    if not ftp:
+        return {**out, "ftp": ftp}
+    cur.execute("""
+        SELECT start_time::date AS day, ftp_at_time, name FROM activities
+        WHERE superseded_by IS NULL AND type = ANY(%s) AND ftp_at_time IS NOT NULL
+        ORDER BY start_time DESC LIMIT 2000;
+    """, (list(CYCLING_TYPES),))
+    since = None
+    rows = cur.fetchall()
+    for r in rows:
+        if round(float(r["ftp_at_time"])) != round(float(ftp)):
+            break
+        since = r["day"]
+    tests = [r["day"] for r in rows if FTP_TEST_NAME.search(r["name"] or "")]
+    updated = max([d for d in (since, tests[0] if tests else None) if d], default=None)
+    age = (date.today() - updated).days if updated else None
+    out.update(ftp_updated=updated.isoformat() if updated else None, ftp_age_days=age,
+               ftp_test_due=age is None or age > FTP_TEST_DUE_DAYS)
+    if (age is None or age > EFTP_FALLBACK_DAYS) and eftp:
+        return {**out, "ftp": round(float(eftp)), "ftp_source": "eftp"}
+    return {**out, "ftp": ftp}
 
 
 # Set FTP vs Intervals.icu eFTP: eFTP sinking is often just a lack of recent hard
@@ -55,13 +98,26 @@ EFTP_BELOW_PCT = 5
 EFTP_ABOVE_PCT = 3
 
 
-def ftp_drift(ftp, eftp) -> dict | None:
+def ftp_drift(ftp, eftp, profile: dict | None = None) -> dict | None:
     """Compares set FTP with eFTP. Returns {pct, status, message} or None without data.
-    status: "below" (eFTP >5% lower), "above" (eFTP >3% higher) or "ok"."""
+    status: "below" (eFTP >5% lower), "above" (eFTP >3% higher) or "ok". With `profile`
+    (load_athlete_profile), says when targets already use eFTP and when a test is due."""
     if not ftp or not eftp:
         return None
     pct = round((float(eftp) / float(ftp) - 1) * 100, 1)
-    if pct <= -EFTP_BELOW_PCT:
+    p = profile or {}
+    when = f"last updated {p['ftp_age_days']} days ago" if p.get("ftp_age_days") is not None else "no update found"
+    if p.get("ftp_source") == "eftp":
+        return {"pct": pct, "status": "below" if pct < 0 else "above" if pct > 0 else "due", "message": (
+            f"No FTP test for over {EFTP_FALLBACK_DAYS // 7} weeks ({when}), so targets use eFTP {eftp:.0f} W "
+            f"instead of your set FTP {ftp:.0f} W. Do an FTP test (ramp or 20 min) and update FTP in Intervals.icu - "
+            "targets go back to the set FTP from then.")}
+    if pct <= -EFTP_BELOW_PCT and p.get("ftp_age_days") is not None and p["ftp_age_days"] <= EFTP_FALLBACK_DAYS:
+        status = "below"
+        message = (f"eFTP {eftp:.0f} W is {abs(pct):.0f}% below your set FTP {ftp:.0f} W, but FTP was {when} - "
+                   "eFTP is probably just missing recent maximal efforts. Targets stay on the set FTP; after "
+                   f"{EFTP_FALLBACK_DAYS // 7} weeks without a test they switch to eFTP.")
+    elif pct <= -EFTP_BELOW_PCT:
         status = "below"
         message = (f"eFTP {eftp:.0f} W is {abs(pct):.0f}% below your set FTP {ftp:.0f} W - power targets may be "
                    "too high. Do an FTP test or a hard 20-min effort; if it confirms, lower FTP in Intervals.icu.")
@@ -72,6 +128,10 @@ def ftp_drift(ftp, eftp) -> dict | None:
     else:
         status = "ok"
         message = f"eFTP {eftp:.0f} W agrees with your set FTP {ftp:.0f} W."
+    if p.get("ftp_test_due"):
+        message += (f" FTP {when} - a test is due (every 6-8 weeks); after {EFTP_FALLBACK_DAYS // 7} weeks without "
+                    "one, targets switch to eFTP.")
+        status = "due" if status == "ok" else status
     return {"pct": pct, "status": status, "message": message}
 
 
@@ -291,9 +351,48 @@ def load_current_training_block(conn) -> dict:
 
     block = _clean_row(dict(row))
     mode = get_focus()["mode"]
-    block["primary_focus"] = adjust_focus_text(block["primary_focus"], block["is_deload"], mode)
+    block["primary_focus"] = adjust_focus_text(block["primary_focus"], block["is_deload"], mode, block["phase"])
     block["load_so_far_this_block"] = round(float(load_so_far), 1)
+    block["days_left_this_week"] = (row["end_date"] - today).days + 1  # including today
+
+    # Planned vs done sessions, so the coach can pick the key ones when the week runs short.
+    from core.plan import week_block, week_done  # lazy: core.plan -> core.overview -> core.metrics
+    planned = (week_block(row["start_date"]) or {}).get("sessions") or {}
+    done, _ = week_done(row["start_date"])
+    block["sessions_planned"] = {k: int(v) for k, v in planned.items() if v}
+    block["sessions_done"] = {k: v for k, v in done.items() if v}
+    block["sessions_remaining"] = {k: int(v) - done.get(k, 0) for k, v in planned.items() if int(v) > done.get(k, 0)}
     return block
+
+
+def _safe_context(name: str, fn):
+    try:
+        return fn()
+    except Exception as e:
+        logger.warning(f"Context '{name}' unavailable: {e}")
+        return None
+
+
+def _plan_goal() -> str:
+    """What the plan works towards: the next A (or B) race, else fitness + FTP."""
+    from core.overview import cached  # lazy: core.overview imports this module
+    from core.races import fetch_upcoming_races
+    races = _safe_context("races", lambda: cached("races", 600, fetch_upcoming_races)) or []
+    for prio in ("A", "B"):
+        r = next((r for r in races if r.get("priority") == prio), None)
+        if r:
+            return (f"{prio} race {r['name']} on {r['date']} (in {r['days_until']} days) - the plan builds towards it "
+                    "(race prep, taper, race week).")
+    return GOAL_NO_RACE
+
+
+def _intensity_distribution():
+    from core.injury_checks import _load_data, intensity_distribution
+    conn = get_connection()
+    try:
+        return intensity_distribution(_load_data(conn, date.today())["activities"], date.today())
+    finally:
+        conn.close()
 
 
 def load_athlete_metrics() -> dict:
@@ -304,6 +403,15 @@ def load_athlete_metrics() -> dict:
         wellness = load_latest_wellness(conn)
         recent_activities = load_recent_activities(conn, limit=5)
         current_block = load_current_training_block(conn)
+        today = date.today()
+        avail = _safe_context("availability", availability.context)
+        sick = next((e for e in (avail or {}).get("entries", [])
+                     if e["kind"] == "sick" and today.isoformat() in e["dates"]), None)
+        sick_until = date.fromisoformat(sick["until"]) if sick else None
+        illness_end = date.fromisoformat(avail["illness_ended"]) if avail and avail.get("illness_ended") else None
+        back = return_status(training_days(conn, today - timedelta(days=60)), today, sick_until, illness_end)
+        if current_block:
+            current_block["goal"] = _plan_goal()
 
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) AS n FROM activities WHERE superseded_by IS NULL;")
@@ -317,7 +425,10 @@ def load_athlete_metrics() -> dict:
             "current_date": date.today().isoformat(),
             "ftp": profile.get("ftp"),
             "eftp": profile.get("eftp"),
-            "ftp_check": (ftp_drift(profile.get("ftp"), profile.get("eftp")) or {}).get("message"),
+            "ftp_set": profile.get("ftp_set"),
+            "ftp_source": profile.get("ftp_source"),  # "eftp" when there was no FTP test for over 8 weeks
+            "ftp_updated": profile.get("ftp_updated"),
+            "ftp_check": (ftp_drift(profile.get("ftp_set"), profile.get("eftp"), profile) or {}).get("message"),
             "max_hr": profile.get("max_hr"),
             "resting_hr_setting": profile.get("resting_hr"),
             "fthr": profile.get("fthr"),
@@ -329,6 +440,10 @@ def load_athlete_metrics() -> dict:
             "wellness": wellness,
             "training_focus": get_focus()["mode"],
             "current_training_block": current_block,
+            "return_to_training": back,
+            "availability": avail,
+            "athlete_feedback": _safe_context("feedback", feedback_context),
+            "intensity_distribution": _safe_context("intensity distribution", _intensity_distribution),
             "activities": recent_activities,
             "total_activities": total_activities or 0,
             "longest_activity_duration_hours": round(longest_sec / 3600, 2) if longest_sec else 0,

@@ -2,8 +2,9 @@
 
 A self-hosted, multi-agent AI endurance coach for cyclists (with running and gym support).
 
-It pulls your training and wellness data from **Intervals.icu** (and optionally
-**Withings** and **Strava**) into your own Postgres database. A team of specialist AI
+It pulls your training data from **Intervals.icu**, your health data (sleep, HRV,
+stress, Body Battery...) straight from **Garmin**, and optionally weight from
+**Withings** and names from **Strava** into your own Postgres database. A team of specialist AI
 agents then coaches you from it. All the numbers (readiness, injury risk, fitness
 projections, race pacing) are computed in code; the LLMs only explain and prioritise them.
 
@@ -13,8 +14,10 @@ You reach the coach in three ways:
   weekly load against the plan, adaptive training plan, injury-risk card, next-race
   card with weather and pacing, activity list, a streaming chat, and a System page with
   API-call and Gemini cost tracking.
-- **Telegram bot**: a morning briefing, chat with memory, what-if simulations, and
-  Strava note editing.
+- **Telegram bot**: a morning briefing and check-in, a two-tap RPE/legs question after
+  each session, chat with memory, what-if simulations, and Strava note editing. Tell it
+  "sick for 3 days", "only 40 min today" or "swap Tuesday's intervals with Thursday's
+  long ride" and the plan works around those exact dates, then resumes by itself.
 - **Strava**: an optional short coach note appended to each new activity's description.
 
 > This is a personal project shared as a starter kit. It was built for one athlete on
@@ -46,6 +49,7 @@ For the full design (every decision rule and every file), read
 
 ```
  Garmin/Wahoo/... ──► Intervals.icu ──┐                     ┌──► Web dashboard (React)
+ Garmin (health) ─────────────────────┤                     │
  Withings (weight) ───────────────────┼──► ingest/ ──► Postgres ◄──┤
  Strava (names, notes) ◄─────────────►┘                     ├──► Telegram bot
                                                     ▲       └──► Strava descriptions
@@ -72,9 +76,13 @@ specialist:
 A **"Local only"** switch (dashboard and Telegram) answers everything with the local
 model instead, which costs nothing but gives shorter answers.
 
-**Intervals.icu is the source of truth.** Activities, wellness (HRV, sleep, resting
-HR), the fitness/fatigue model (CTL/ATL), FTP/LTHR and your race calendar all come from
-it, so you edit thresholds and add races there.
+**Intervals.icu is the source of truth for training.** Activities, the fitness/fatigue
+model (CTL/ATL), FTP/LTHR and your race calendar all come from it, so you edit
+thresholds and add races there. A/B races anchor the adaptive plan (race prep, taper,
+race week, recovery); with no race it works towards fitness and FTP. Test FTP every 6-8 weeks:
+after 8 weeks without a test, targets use Intervals.icu's eFTP until you retest. **Garmin is the only source of health data**: sleep
+and sleep stages, HRV and HRV status, resting and sleeping HR, stress, Body Battery,
+respiration, SpO2 and steps come straight from the Garmin Connect Personal API.
 
 ---
 
@@ -84,7 +92,8 @@ it, so you edit thresholds and add races there.
 
 | Service | Required? | Used for | Cost |
 |---|---|---|---|
-| [Intervals.icu](https://intervals.icu) | **Yes** | All training and wellness data, race calendar | Free |
+| [Intervals.icu](https://intervals.icu) | **Yes** | All training data, fitness model, race calendar | Free |
+| [Garmin Connect](https://connect.garmin.com) Personal API key | **Yes** for health data | Sleep, HRV, resting HR, stress, Body Battery, SpO2, steps | Free |
 | [Google AI Studio](https://aistudio.google.com/apikey) (Gemini API key) | **Yes** for the cloud agents | Coach, Racing, History, Twin, Strava notes | Pay per use; the System page shows the cost |
 | [Ollama](https://ollama.com) | **Yes** (routing and Local only) | Supervisor, injury narration, Local-only mode | Free; runs on your own machine |
 | Telegram bot (via [@BotFather](https://t.me/BotFather)) | Optional | Morning briefing and chat on your phone | Free |
@@ -93,8 +102,8 @@ it, so you edit thresholds and add races there.
 | Google Cloud OAuth client | Optional (disabled by default) | Calendar-aware "life" agent | Free |
 
 Your activities need to reach Intervals.icu. Connect Garmin, Wahoo, Zwift or Strava in
-Intervals.icu → Settings. For HRV and sleep, connect a wellness source there too, such
-as Garmin, Oura or Whoop.
+Intervals.icu → Settings. Health data is read from Garmin only (§4.6): without a Garmin
+watch and key, the HRV, sleep and recovery checks have no data.
 
 ### Software
 
@@ -138,6 +147,7 @@ Fill it in:
 | `READONLY_DATABASE_URL` | Leave empty: `scripts/setup_readonly_role.py` writes it (§3.4) |
 | `INTERVALS_ATHLETE_ID` | Your athlete id, e.g. `i12345` (Intervals.icu → Settings, or the number in your profile URL) |
 | `INTERVALS_API_KEY` | Intervals.icu → Settings → Developer Settings → API key |
+| `GARMIN_PERSONAL_API_KEY` | Garmin Connect (web) → Personal API Key (§4.6) |
 | `GEMINI_API_KEY` | From Google AI Studio |
 | `OLLAMA_BASE_URL` | e.g. `http://localhost:11434`, or the address of your GPU machine |
 | `WITHINGS_CLIENT_ID` / `WITHINGS_CLIENT_SECRET` | Optional, from your Withings developer app (§4.3) |
@@ -181,7 +191,8 @@ This sets a random password on the `coach_reader` role and writes
 
 ```bash
 venv/bin/python ingest/import_intervals.py --days 3650   # activities (as far back as you like)
-venv/bin/python ingest/import_wellness.py  --days 3650   # HRV, sleep, resting HR, CTL/ATL
+venv/bin/python ingest/import_wellness.py  --days 3650   # CTL/ATL, eFTP, VO2max
+venv/bin/python ingest/import_garmin.py    --days 3650   # sleep, HRV, resting HR, stress, Body Battery (slow: ~1 s/day)
 venv/bin/python ingest/import_profile.py                 # FTP, LTHR, max/resting HR, weight
 venv/bin/python scripts/update_plan.py                   # build the adaptive training plan
 ```
@@ -279,6 +290,21 @@ Then set `LIFE_AGENT_ENABLED=true`.
 Commands: `/twin <what-if>`, `/local` (toggle Local only), `/strava [date] [context]`,
 `/briefing`, `/sync`, `/reset`. The bot uses long polling, so nothing needs to be exposed
 to the internet.
+
+### 4.6 Garmin (health data)
+
+1. Log in to Garmin Connect on the web, open **Personal API Key**, select **Create Key**,
+   accept the terms and pick an expiry (30 days to 1 year). The key is shown only once.
+2. Put it into `GARMIN_PERSONAL_API_KEY`. The importer exchanges it for a 24-hour access
+   token by itself and keeps it in `state/garmin_token.json`, because Garmin rate-limits
+   token requests.
+3. Import your history: `venv/bin/python ingest/import_garmin.py --days 3650`. It
+   commits every 28 days and prints progress; if it stops, resume with
+   `--start <the first day it didn't reach>`. After that, every sync pulls the last 5 days.
+
+When the key expires, the sync logs "Garmin health: sync failed". Create a new key and
+replace it in `.env`, then restart. Turn on Pulse Ox on the watch if you want SpO2.
+The Personal API is meant for your own data only.
 
 ---
 
@@ -454,6 +480,7 @@ tail -f logs/app.log logs/telegram.log
 | `Strava token lacks activity:write` | Re-run `ingest/strava_auth.py` with every box ticked |
 | Telegram bot exits at start | `TELEGRAM_BOT_TOKEN` or `TELEGRAM_ALLOWED_USER_IDS` is missing |
 | Empty charts | No data imported yet: run the §3.5 imports, check `INTERVALS_ATHLETE_ID` and `INTERVALS_API_KEY` |
+| No HRV/sleep data, sync says "Garmin health: sync failed" | `GARMIN_PERSONAL_API_KEY` missing or expired: create a new key (§4.6) |
 | Dates are off by a few hours | The timezone is still the default (§7.1) |
 
 ---
@@ -468,7 +495,7 @@ telegram_bot.py      Telegram front-end
 agents/              The specialist agents and their shared tools
 core/                Deterministic logic: metrics, readiness, injury checks, plan,
                      simulators, race planner, Strava notes, call logging
-ingest/              Intervals.icu / Withings / Strava importers and OAuth helpers
+ingest/              Intervals.icu / Garmin / Withings / Strava importers and OAuth helpers
 scripts/             Database setup, timers' jobs, maintenance tools
 db/migrations/       The database schema, applied in order
 deploy/              systemd units and timers

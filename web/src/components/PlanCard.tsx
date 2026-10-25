@@ -76,7 +76,9 @@ function WeekTile({ w, scale }: { w: PlanWeek; scale: number }) {
                 ? "bg-emerald-500/15 text-emerald-300"
                 : w.phase === "Base"
                   ? "bg-amber-500/15 text-amber-300"
-                  : "bg-sky-500/15 text-sky-300"
+                  : w.phase === "Race" || w.phase === "Taper" || w.phase === "Race prep"
+                    ? "bg-rose-500/15 text-rose-300"
+                    : "bg-sky-500/15 text-sky-300"
             }`}
           >
             {w.is_deload ? "Deload" : w.phase}

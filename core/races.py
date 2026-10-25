@@ -104,18 +104,23 @@ def _event_to_race(e: dict) -> dict:
     }
 
 
-def fetch_upcoming_races(days_ahead: int = 365) -> list[dict]:
-    """Race events (A/B/C) from today forward, soonest first."""
+def fetch_races(oldest: date, newest: date) -> list[dict]:
+    """Race events (A/B/C) in the Intervals.icu calendar between two dates, soonest first."""
     env = load_env()
     resp = requests.get(
         f"{BASE_URL}/api/v1/athlete/{env['INTERVALS_ATHLETE_ID']}/events",
-        params={"oldest": date.today().isoformat(), "newest": (date.today() + timedelta(days=days_ahead)).isoformat()},
+        params={"oldest": oldest.isoformat(), "newest": newest.isoformat()},
         auth=("API_KEY", env["INTERVALS_API_KEY"]),
         timeout=30,
     )
     resp.raise_for_status()
     races = [_event_to_race(e) for e in resp.json() if e.get("category") in RACE_CATEGORIES]
     return sorted(races, key=lambda r: r["date"])
+
+
+def fetch_upcoming_races(days_ahead: int = 365) -> list[dict]:
+    """Race events (A/B/C) from today forward, soonest first."""
+    return fetch_races(date.today(), date.today() + timedelta(days=days_ahead))
 
 
 def list_upcoming_races() -> str:

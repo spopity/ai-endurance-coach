@@ -1,7 +1,8 @@
 # AI Coach v1: How the System Works
 
-A self-hosted, multi-agent endurance coach. It pulls training and wellness data from
-Intervals.icu (fed by Garmin), Withings and Strava into a Postgres database. Specialist
+A self-hosted, multi-agent endurance coach. It pulls training data from Intervals.icu,
+health data straight from Garmin, weight from Withings and names from Strava into a
+Postgres database. Specialist
 AI agents reason over that data. Results reach the athlete in three places: a web
 dashboard, a Telegram bot, and coach notes written into Strava activity descriptions.
 
@@ -14,6 +15,7 @@ lists **every file in the project** with what it does and how it affects the who
 
 ```
  Garmin ──► Intervals.icu ──┐                      ┌──► Web dashboard (React, /)
+ Garmin (health) ───────────┤                      │
  Withings ──────────────────┼──► ingest/ ──► Postgres ◄──┤
  Strava (names) ◄──────────►┘    (sync)    athlete_twin_v2 ├──► Telegram bot (briefing + chat)
                                               ▲            └──► Strava descriptions (coach notes)
@@ -31,8 +33,8 @@ lists **every file in the project** with what it does and how it affects the who
 | What | How it runs | Purpose |
 |---|---|---|
 | `app.py` | systemd `ai-coach-v1.service` (port 8000) | FastAPI: dashboard, JSON API, chat streaming, `/sync-data` |
-| `telegram_bot.py` | systemd `ai-coach-telegram.service` | Morning briefing, chat, `/strava` note editor |
-| Data sync | host crontab, every 30 min: `POST /sync-data` | Pulls the last 5 days of activities and wellness from Intervals.icu |
+| `telegram_bot.py` | systemd `ai-coach-telegram.service` | Morning briefing and check-in, session feedback, chat, `/strava` note editor |
+| Data sync | host crontab, every 30 min: `POST /sync-data` | Pulls the last 5 days of activities and fitness from Intervals.icu and health data from Garmin |
 | Strava notes | `ai-coach-strava-notes.timer`, every 10 min | Writes a coach note into each new activity's Strava description |
 | Intervals.icu health | `ai-coach-intervals-health.timer`, every 15 min | Sends a Telegram alert when the API goes down or recovers |
 | Full sync check | `ai-coach-sync-check.timer`, 03:30 nightly | Finds and imports any records the 5-day sync missed |
@@ -41,8 +43,15 @@ lists **every file in the project** with what it does and how it affects the who
 
 ### External services
 
-- **Intervals.icu**: the source of truth for activities, wellness (HRV, sleep,
-  resting HR), fitness/fatigue (CTL/ATL), FTP/LTHR, and the race calendar.
+- **Intervals.icu**: the source of truth for activities, fitness/fatigue (CTL/ATL),
+  eFTP, VO2max, FTP/LTHR, and the race calendar.
+- **Garmin Connect Personal API**: the only source of health data: sleep (score,
+  stages, timing), HRV and HRV status, resting/sleeping HR, stress, Body Battery,
+  respiration, SpO2, steps and daily activity, Fitness Age. Read-only; a personal API
+  key (`GARMIN_PERSONAL_API_KEY`) is exchanged for a 24 h token. Garmin rate-limits
+  token requests, so the token is shared by every process through
+  `state/garmin_token.json` and renewed only shortly before it expires. The key itself expires (30 days to 1 year, chosen
+  when it was created) and must then be re-created in Garmin Connect.
 - **Gemini** (`gemini-pro-latest`): the cloud model for the AI Coach, Athlete Twin,
   Racing Strategy and Strava-note text.
 - **Ollama** (`qwen3:8b` on a GTX 1070 in another LXC): the local model for routing,
@@ -86,10 +95,18 @@ These recurring ideas explain most of the code:
 - `ingest/import_intervals.py` and `ingest/import_wellness.py` fetch from the
   Intervals.icu REST API. `ingest/field_map*.py` maps payloads onto table rows.
   Rows are upserted on `(source, external_id)` for activities and on `day` for
-  wellness.
+  wellness. The wellness import writes only the fitness model, VO2max, blood pressure,
+  body and subjective fields, never the health columns.
+- `ingest/import_garmin.py` is the only writer of the health columns of `daily_metrics`
+  (sleep, HRV, resting HR, stress, Body Battery, respiration, SpO2, steps, calories,
+  intensity minutes). Garmin's values match what Intervals.icu used to relay, so the
+  HRV/sleep baselines carry on. Per day: user summary, HR samples (for the average
+  sleeping HR) and SpO2; sleep and HRV come in 28-day ranges. A day Garmin has no data
+  for is never written, so older history stays. A Garmin failure doesn't stop the
+  Intervals.icu sync.
 - `ingest/import_profile.py` syncs FTP, LTHR, max HR, resting HR, weight and the latest
   eFTP into `athlete_profile`, so these values are edited in one place (Intervals.icu).
-- `core/chat.run_sync()` runs all three in-process. It is called by `/sync-data` (cron),
+- `core/chat.run_sync()` runs all four in-process. It is called by `/sync-data` (cron),
   the dashboard and Telegram `/sync` buttons, and before the morning briefing.
 - `scripts/check_intervals_sync.py` reconciles the full history every night. Late
   uploads (a holiday synced a week later) fall outside the 5-day window otherwise.
@@ -105,11 +122,11 @@ These recurring ideas explain most of the code:
 | Table | Holds |
 |---|---|
 | `activities` | One row per activity: about 50 mapped metrics, `raw_payload` JSONB, Strava id/note/note context, the next-session decision |
-| `daily_metrics` | One row per day: wellness (HRV, resting HR, sleep), CTL/ATL/ramp rate, eFTP, weight |
+| `daily_metrics` | One row per day: Garmin health (sleep and stages, HRV and status, resting/sleeping HR, stress, Body Battery, respiration, SpO2, steps, `garmin_payload` JSONB), Intervals.icu CTL/ATL/ramp rate, eFTP, VO2max, Withings weight |
 | `athlete_profile` | A single row: FTP, LTHR, max/resting HR, weight, eFTP, W′, peak power |
 | `training_blocks` | One row per calendar week: phase, deload flag, target load range, focus, planned session mix |
 | `athlete_settings` | Key/value choices made in the dashboard (the training focus) |
-| `api_calls` | One row per outgoing call (Gemini, Ollama, Intervals.icu, Strava, Telegram, Open-Meteo, Withings) with process, reason, duration, tokens and estimated cost |
+| `api_calls` | One row per outgoing call (Gemini, Ollama, Intervals.icu, Garmin, Strava, Telegram, Open-Meteo, Withings) with process, reason, duration, tokens and estimated cost |
 
 The schema is defined only by `db/migrations/*.sql`, applied in order by
 `scripts/create_database.py`.
@@ -157,12 +174,18 @@ Its prompt holds a ranked rulebook. In short:
 - One definitive session, never a menu. Gym can share a day with a ride.
 - **Gym sessions:** only a session whose title names legs counts as leg work, and that
   blocks hard leg work the next day. Other gym sessions never justify going easier.
-- Return after 3 or more days off means a short Z1–2 opener only. Poor sleep
-  (score < 70 or under 6.5 h, `SLEEP_MIN_HOURS`) means rest or easy.
+- **Graded return to training** (`return_to_training`, computed by
+  `core/periodization.return_status()`): 3–6 days off → a normal endurance session,
+  then back to the plan; 7–13 → 2 easy sessions, then the plan at ~75% for that week;
+  14+ → 3 easy sessions, then the (stepped-back) plan. Poor sleep (score < 70 or under
+  6.5 h, `SLEEP_MIN_HOURS`) means rest or easy.
 - **Periodization:** follow the current training block's focus and weekly load range.
-  A deload week never contains intervals.
-- **Readiness overrides the plan:** red means rest or easy only, amber means no VO2max,
-  green means the full plan.
+  A deload week never contains intervals. Base allows a weekly VO2 touch or sprints
+  (under 10 min hard, inside an endurance ride); full VO2max sessions are Build-only.
+  When the week runs short (`sessions_remaining` vs `days_left_this_week`), keep the key
+  sessions (quality + long) and drop filler; never cram missed load.
+- **Readiness overrides the plan:** red means rest or easy only, amber means no VO2max
+  (not even the Base touches), green means the full plan.
 - The injury-risk tool must be called before prescribing anything hard.
 - Stick to the already-decided next session unless something new justifies a change.
   Say "next session", not "tomorrow".
@@ -170,11 +193,14 @@ Its prompt holds a ranked rulebook. In short:
 
 ### 4.3 Readiness (`core/readiness.py`)
 
-A green/amber/red traffic light built from three signals:
+A green/amber/red traffic light built from four signals:
 
 - **Form (TSB):** −20 or below is amber, −30 or below is red.
 - **7-day HRV versus baseline:** "below" is amber, "low" is red.
 - **The injury check's overall level:** caution is amber, high is red.
+- **The athlete's own feedback** (`core/feedback.signals()`, §4.11): ill (check-in or a
+  sick day in the availability file) is red; very sore, sore + low motivation, or sore legs
+  after the last hard session are amber.
 
 The briefing, the coach's context, the local coach and (privately) the Strava notes all
 use the same verdict.
@@ -201,8 +227,13 @@ the dashboard card and the chat context all read the stored decision, so they ne
 disagree. Rules:
 
 - Only the latest activity has a decision.
-- A decision expires after 36 h.
-- The dashboard can request a fresh one.
+- **It never just waits to be done.** `refresh()` re-decides it after every sync once it
+  is 24 h old without a new activity, and every morning before the briefing when it was
+  made before last night (an athlete-applied choice is kept for its full 24 h). The
+  re-decide prompt gives the days since the last training, last night's sleep/HRV and
+  the sessions still to do this week.
+- The morning briefing shows this same decision (no separate suggestion), and the
+  dashboard card decides automatically when there is none; "Re-decide" forces one.
 
 **Changing it from a chat, with approval.** When the athlete explicitly asks in a chat
 ("update my plan", "save that ride as my next session"), the coach calls the
@@ -228,14 +259,32 @@ disagree. Rules:
   rewrites the table:
   - Each closed week gets a verdict against its target: completed (≥85% of the target
     minimum and ≥3 training days), partial, missed (<50% or ≤1 day), or recovery.
-  - Base comes first; Build unlocks only after 6 completed Base weeks. Partial weeks
-    don't count, a missed week costs one, 2 missed weeks in a row or CTL falling 25%
-    below the phase peak reset to Base week 1.
-  - A recovery week follows 3 loading weeks (after 2 if TSB < -25); a missed week counts as rest.
+  - Base comes first; Build unlocks after 6 completed Base weeks **within the last 10**.
+    Partial and missed weeks don't count but cost nothing (a week off costs little
+    fitness). The only step back is CTL falling 25%+ below the phase peak: about one
+    base week to redo per 10% of CTL lost (from Build: back to Base with that many to redo).
+  - A recovery week comes when form or HRV call for it after at least 2 loading weeks
+    (TSB < -25, HRV 7-day "low", or "below" with TSB < -15 - the readiness formula,
+    `hrv_trend()`), and at the latest after 4. Only a week at or above ~7×CTL (the load
+    that holds fitness) is a loading week; a missed week counts as rest.
   - Targets come from the current CTL: ~7×CTL holds fitness, plus a CTL ramp of
     2/week in Base and 3/week in Build; recovery weeks are 50-70% of 7×CTL.
-  - Future weeks are a projection assuming completion. `notes` says why each week has
-    its phase (shown on the plan card and given to the coach); hand edits are overwritten.
+  - Future weeks are a projection assuming completion (this week: actual load so far
+    plus the days left; deloads every 3 loading weeks, since future HRV is unknown).
+    `notes` says why each week has its phase (shown on the plan card and given to the
+    coach); hand edits are overwritten.
+  - **Races anchor the plan** (Intervals.icu RACE_A/B events, past ones included so the
+    replay knows a race happened). A race: race-specific "Race prep" 2–6 weeks out
+    (Build starts early within 12 weeks, from 3/6 base weeks), "Taper" the week before
+    (70–85% of the holding load, intensity kept), the "Race" week with openers (55–80%),
+    then a recovery week; within 3 weeks of it the taper replaces a calendar deload. B race: a
+    mini-taper in its own week. C races are hard sessions. **No A/B race:** the plan
+    works towards fitness and FTP (`GOAL_NO_RACE`, `current_training_block.goal`).
+  - **Days off from the availability file** (§4.11) scale that week's targets pro rata;
+    with at most 2 days available the week is "away" (rest, nothing lost, not counted
+    in the base window).
+  - Base keeps a little intensity: early Base a weekly sprint/VO2 touch inside an
+    endurance ride, late Base adds a tempo session.
 - Completed sessions are classified from Intervals.icu zone times:
   - Rides are VO2 (≥10 min in Z5), sweet spot (≥20 min SS or ≥15 min Z4), or endurance.
   - Runs, weights, and other types are counted separately.
@@ -290,7 +339,7 @@ Every outgoing call is written to `api_calls`, without changing any call site:
   (including Gemini's thinking tokens, which are billed as output), duration and an
   estimated cost from the `PRICES` table (Gemini 3.1 Pro: $2/M in, $12/M out).
 - **HTTP:** `requests.Session.send` is wrapped once per process (from `core/db.py`), so
-  Intervals.icu, Strava, Telegram notifications, Open-Meteo and Withings are counted.
+  Intervals.icu, Garmin, Strava, Telegram notifications, Open-Meteo and Withings are counted.
   Paths are normalised (ids and the bot token replaced by `{id}`). The Telegram bot's own
   traffic uses httpx and is not counted.
 - **Who and why:** each row stores the process (`app`, `telegram_bot`, a timer script) and
@@ -310,13 +359,48 @@ service flow chart, busy hours, per-component token table, and the latest calls.
   and Gemini cost page (§4.9). Reachable remotely through Tailscale. A minimal legacy
   chat page is still at `/classic`.
 - **Telegram:**
-  - **Morning briefing** at `BRIEFING_TIME`: syncs first, then computed facts plus the
-    coach's suggestion for today.
+  - **Morning briefing** at `BRIEFING_TIME`: syncs first, re-checks the next session
+    with last night's sleep/HRV, then computed facts plus that shared decision.
   - **Chat** (with 3 h conversation memory), `/twin`, `/local`, `/strava`, `/briefing`,
     `/sync`, `/reset`.
-  - The bot does **not** message about new activities; new activities only get their
-    Strava note.
+  - **Feedback** (§4.11): RPE and legs after each new session (checked every 10 min,
+    not between 22:00 and 07:00), and a check-in (body, motivation) after the briefing.
   - Only user ids listed in `TELEGRAM_ALLOWED_USER_IDS` get answers.
+
+### 4.11 FTP, feedback and availability (`core/metrics.py`, `core/feedback.py`, `core/availability.py`)
+
+- **Training FTP** (`metrics.training_ftp()`): targets use the set FTP while it is
+  fresh. "Updated" is the later of the first ride with the current FTP (Intervals.icu
+  stamps `ftp_at_time` on each activity) and the last ride named like an FTP test. It
+  follows a test every 6-8 weeks: over 6 weeks old → `ftp_check` says a test is due;
+  over 8 weeks without one → targets use eFTP (`ftp_source = "eftp"`, the dashboard says
+  "FTP (from eFTP)") until the next test. The same profile feeds the coach, simulators
+  and race planner.
+- **Feedback** (tables `session_feedback`, `daily_checkin`, migration 016 - kept apart
+  from `activities.rpe/feel`, which Intervals.icu overwrites): Telegram buttons only,
+  so no number comes from a model. RPE and legs are asked **only after hard rides and
+  runs** (`feedback.is_hard()`: rides classified sweet spot / VO2, runs with 10+ min in
+  HR Z4+ or 25+ min in Z3+, FTP tests, races); gym, easy and endurance sessions are covered by the
+  next morning's check-in, which names them. It feeds readiness (§4.3) and
+  `athlete_feedback` in the coach's context. An answer that changes things (ill, very
+  sore, sore legs) re-plans and sends the updated next session; "Ill" also saves a sick day.
+- **Availability** (`state/availability.json`): the coach's `record_availability` /
+  `cancel_availability` tools (live chat turns, Telegram and dashboard) save what the
+  athlete says - sick / away / unavailable / limited (`max_minutes`) - as exact dates
+  ("3 days" = today and the next 2). **Planned** entries (`plan_session`, one per date -
+  a swap is two) pin a session to a day: the coach prescribes exactly that on the day
+  unless readiness is red, the athlete is ill or a HIGH injury flag says no. A later
+  no-training entry on that date removes it (the coach says so and offers to re-pin it);
+  a session can't be pinned onto a no-training day. The supervisor sends every such message to
+  `ai_coach`. Every read moves fully past entries to `history` (kept 400 days for the
+  replay and the after-illness return), so normal training resumes by itself. A change
+  re-plans the week and the next session (`next_session.replan()`). The coach never
+  plans training on a no-training day, fits limited days into `max_minutes`, and after
+  an illness the first 2 sessions are easy (`return_to_training` "after_illness").
+- **Intensity distribution** (`injury_checks.check_intensity()`): the last 28 days'
+  time in zone (power Z1–2 / Z3–4 / Z5+, HR zones without power) against a pyramidal
+  split - over 25% moderate, under 70% easy or over 12% hard is a caution finding; also
+  `intensity_distribution` in the coach's context.
 
 ---
 
@@ -326,14 +410,14 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 
 | File | What it contains | Role in the system |
 |---|---|---|
-| `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
+| `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router | The main web process and the target of the 30-min sync cron |
 | `dashboard_api.py` | The `/api/*` JSON endpoints: overview, PMC, wellness, weekly load, plan, focus get/set, next session, activities, Strava-note preview/post, injury report, races, usage (System page), chat, sync | Everything the dashboard shows or does goes through here |
 | `graph.py` | The LangGraph workflow: preprocessor (metrics + readiness + next session), local-model supervisor router, agent nodes, local/cloud switch | The brain: decides which agent answers and what context it gets |
-| `telegram_bot.py` | The Telegram bot: access control, chat with memory, `/twin`, `/local`, `/strava` preview/post buttons, `/briefing`, `/sync`, `/reset`, the daily briefing job | The mobile front-end and the daily push message |
+| `telegram_bot.py` | The Telegram bot: access control, chat with memory, `/twin`, `/local`, `/strava` preview/post buttons, `/briefing`, `/sync`, `/reset`, the daily briefing job, session-feedback and check-in buttons | The mobile front-end, the daily push message and the athlete's feedback |
 | `logging_config.py` | Logging setup: daily-rotated files in `logs/` (14 days) plus stdout, quiets noisy libraries | Consistent logs for every process |
 
 ### `agents/`: the specialists
@@ -347,7 +431,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `history.py` | The History Analyst: Gemini ReAct agent that only chooses and interprets: wellness/training summaries, fitness-gain windows, race history and pacing are calculated locally (`core/history_stats.py`), read-only SQL as a last resort; plus a per-metric data-coverage summary | Reports and trends over any past period |
 | `twin.py` | The Athlete Twin: Gemini ReAct agent with the load-projection and ride-time simulators | What-if scenarios and fitness projections |
 | `local.py` | "Local only" versions of the Coach, Twin and Racing agents: code gathers the data and runs the simulators, the local model only writes the answer; compact text context builder | Lets everything run free on the home GPU; also the local coach rules |
-| `tools.py` | Shared LangChain tool wrappers (history search, read-only SQL, wellness trend, power pacing, activity detail, load projection, ride time, upcoming races, race plan, race review) | One implementation of each tool for every agent |
+| `tools.py` | Shared LangChain tool wrappers (history search, read-only SQL, wellness trend, power pacing, activity detail, load projection, ride time, upcoming races, race plan, race review, next-session proposal, availability record/cancel, planned sessions) | One implementation of each tool for every agent |
 | `life.py` | Google Calendar read-only lookup | Life/schedule agent, currently disabled |
 
 ### `core/`: shared logic
@@ -356,28 +440,30 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 |---|---|---|
 | `__init__.py` | Empty package marker | Makes `core` importable |
 | `db.py` | `.env` loader and Postgres connection helper; installs the HTTP call logger | Every database access starts here; every process imports it |
-| `metrics.py` | Builds `metrics_context` (profile, wellness, PMC, recent activities with gym focus, training block); history search; wellness history by date range; interval-level activity detail; FTP-vs-eFTP drift | The data every agent reasons over |
+| `metrics.py` | Builds `metrics_context` (profile with the training FTP, wellness, PMC, recent activities with gym focus, training block with sessions left and goal, return to training, availability, feedback, intensity distribution); history search; wellness history by date range; interval-level activity detail; FTP-vs-eFTP drift | The data every agent reasons over |
 | `history_query.py` | Read-only SQL for the history analyst (as `coach_reader`, read-only transaction, timeout, row cap), the schema guide given to the model, per-metric data coverage | Lets chat answer any question about past data safely |
 | `history_stats.py` | Local calculators for the history analyst: wellness stats/series/period comparison, training volume and workout-type mix (steady vs variable by IF/VI), biggest CTL-gain windows, race detection + pacing | Every history number is computed here, not by the LLM |
 | `pacing.py` | Power fade/pacing per quarter from Intervals.icu watts streams (cached) | "Did my power hold to the end?" |
 | `overview.py` | The shared overview (form, HRV status, week load vs plan, next race), a small TTL cache, the read-only query helper | Keeps the dashboard and briefing numbers identical |
-| `readiness.py` | The green/amber/red verdict from TSB, the HRV trend and the injury level | The single "can I train hard?" answer |
-| `injury_checks.py` | Deterministic risk checks (load, recovery, drift, biomechanics, subjective, running) against personal baselines, plus text/Markdown renderers | Injury agent, coach tool, dashboard card, readiness input |
-| `next_session.py` | Decides, stores and reads the one shared next-session decision | Keeps Strava, the dashboard and chat consistent |
-| `periodization.py` | Adaptive phase engine: replays closed weeks (completed/partial/missed), Base→Build gating, resets, CTL-based targets, projection | Decides what phase each week is and why |
+| `readiness.py` | The green/amber/red verdict from TSB, the HRV trend, the injury level and the athlete's feedback | The single "can I train hard?" answer |
+| `injury_checks.py` | Deterministic risk checks (load, intensity distribution, recovery, drift, biomechanics, subjective, running) against personal baselines, plus text/Markdown renderers | Injury agent, coach tool, dashboard card, readiness input |
+| `feedback.py` | Session RPE/legs and the morning check-in: what to ask, saving taps, readiness signals, coach context | The athlete's own voice in readiness and the plan |
+| `availability.py` | `state/availability.json`: days off / limited days / planned sessions as exact dates, self-expiring into history; day status, unavailable days, last illness, coach context | Plans around sickness, travel and busy days, and resumes by itself |
+| `next_session.py` | Decides, stores and reads the one shared next-session decision; `refresh()` re-decides a stale one (24 h without an activity, every morning) | Keeps Strava, the dashboard, the briefing and chat consistent, and never lets a skipped session sit there |
+| `periodization.py` | Adaptive phase engine: replays closed weeks (completed/partial/missed), rolling Base→Build gate, CTL-drop step-back, form/HRV-timed deloads, CTL-based targets, projection; `hrv_trend()` and the graded `return_status()` | Decides what phase each week is and why, and how to come back after days off |
 | `plan.py` | Session classification (endurance/SST/VO2/run/weights), planned vs done per week, plan summary for prompts | The plan card and the coach's view of "what's left this week" |
 | `focus.py` | Cycling vs dual-sport focus: goals, running rule, session-mix and focus-text adjustments, saved in `athlete_settings` | Switches the whole coaching doctrine for winter |
 | `gym.py` | `gym_focus()`: a gym session counts as leg work only if its title names legs | Stops upper-body/core sessions from limiting bike/run work |
 | `simulators.py` | CTL/ATL/TSB forward projection (Intervals.icu model); cycling physics for speed and time on climbs/segments | Numbers for the Twin and the race planner |
 | `race_planner.py` | Deterministic race plan (course, pacing, fuelling, caffeine, taper, race week) and post-race review | Racing agent output; the dashboard race card |
-| `races.py` | Upcoming races from the Intervals.icu calendar (with description parsing) and past races from history | Race lists for the agents, briefing and dashboard |
+| `races.py` | Races from the Intervals.icu calendar (`fetch_races` for any range, `fetch_upcoming_races`; with description parsing) and past races from history | Race lists for the agents, briefing, dashboard and the race-anchored plan |
 | `weather.py` | Open-Meteo geocoding, forecast and 5-year climatology | Race-day conditions for pacing and fuelling |
 | `llm.py` | LLM factories: `local_llm` (Ollama `qwen3:8b`, thinking off, 8k context, 30 min keep-alive) and `gemini_llm` (`gemini-pro-latest`), each tagged with the component using it | One local model for everything (the GPU never reloads); every LLM call is logged |
 | `api_log.py` | Records every outgoing call into `api_calls`: LangChain usage callback (tokens, cost estimate, price table), `requests` hook for HTTP services, `trigger()` reason tags | Source data for the System page and Gemini cost tracking |
 | `usage.py` | Aggregates `api_calls` for `/api/usage`: totals, timeline, cost projection, components, flows, busy hours, recent calls | Feeds the dashboard's System page |
 | `chat.py` | Shared front-end helpers: `ask_supervisor` (async/sync), SSE `stream_reply`, `run_sync`, agent display names | The web UI, Telegram and timers talk to the graph the same way |
 | `history.py` | Conversation memory: the last 6 messages, the format the supervisor sees | Makes follow-up questions work |
-| `briefing.py` | The morning briefing: computed facts (readiness, HRV, load vs plan, warnings, race countdown) plus the coach's suggestion for today | The daily Telegram message |
+| `briefing.py` | The morning briefing: computed facts (readiness, HRV, load vs plan, warnings, race countdown) plus the shared next-session decision, re-checked that morning | The daily Telegram message |
 | `strava.py` | A minimal Strava client: token refresh, list/get/update activities, scope check | Used by name sync and coach notes |
 | `strava_notes.py` | Builds, merges and posts Strava coach notes for every activity type (facts + Gemini comment + next session), with privacy rules and `#nocoach` | The public coach voice on Strava |
 | `notify.py` | Sends a plain Telegram message from scripts and timers | Alerts from the health check, sync check and name sync |
@@ -388,9 +474,10 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | File | What it contains | Role in the system |
 |---|---|---|
 | `field_map.py` | Maps an Intervals.icu activity payload to an `activities` row (with notes on units, e.g. IF stored as a ratio) | Correctness of every stored activity metric |
-| `field_map_wellness.py` | Maps an Intervals.icu wellness record to a `daily_metrics` row | Correctness of HRV/sleep/CTL/ATL data |
+| `field_map_wellness.py` | Maps an Intervals.icu wellness record to a `daily_metrics` row (no health fields) | Correctness of CTL/ATL/eFTP data |
 | `import_intervals.py` | Fetch and upsert activities (`sync_activities`); runnable as a backfill | Activity sync |
-| `import_wellness.py` | Fetch and upsert wellness days (`sync_wellness`); runnable as a backfill | Wellness and fitness sync |
+| `import_wellness.py` | Fetch and upsert Intervals.icu wellness days (`sync_wellness`); runnable as a backfill | Fitness-model sync |
+| `import_garmin.py` | Garmin Personal API: shared token from the API key, fetch, map (`map_day`) and upsert health days (`sync_garmin`), committed per 28-day chunk; `--days N` or `--start YYYY-MM-DD` backfills and resumes | Every health metric (sleep, HRV, RHR, stress, Body Battery, SpO2...) |
 | `import_profile.py` | Sync FTP/LTHR/max HR/resting HR/weight and the latest eFTP into `athlete_profile` | One place to edit thresholds |
 | `import_withings.py` | Fetch Withings weight measurements into `daily_metrics.weight_kg` | Body-weight history |
 | `withings_auth.py` | One-time interactive Withings OAuth that writes `withings_tokens.json` | Setup only |
@@ -428,6 +515,8 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `012_adaptive_blocks.sql` | `training_blocks.status`, the verdict on each closed week |
 | `013_next_session_proposals.sql` | `next_session_proposals` (chat changes awaiting Apply) and `activities.next_session_source` |
 | `014_readonly_role.sql` | The `coach_reader` role: SELECT on `activities`, `daily_metrics`, `training_blocks`, `athlete_profile` only; read-only, 15 s timeout |
+| `015_garmin_health.sql` | Garmin health columns on `daily_metrics` (sleep stages/timing, HRV status and baseline, stress, Body Battery, respiration, SpO2, daily activity, Fitness Age, `garmin_payload`) |
+| `016_athlete_feedback.sql` | `session_feedback` (RPE, legs per activity) and `daily_checkin` (body, motivation per day), readable by `coach_reader` |
 
 ### `deploy/`: systemd units (copied to `/etc/systemd/system/`)
 
@@ -481,7 +570,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `.env` | Real secrets and settings (see `.env.example`) |
 | `credentials.json`, `token.json` | Google Calendar OAuth (life agent) |
 | `strava_tokens.json`, `withings_tokens.json` | OAuth tokens written by the auth scripts |
-| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state) |
+| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
 | `logs/` | Rotating logs for each process, plus `sync-cron.log` |
 | `venv/` | The Python virtualenv |
 | `web/node_modules/`, `web/dist/` | Frontend dependencies and the built dashboard (rebuild with `cd web && npm install && npm run build`) |
@@ -501,4 +590,6 @@ venv/bin/python scripts/post_strava_notes.py --dry-run
 venv/bin/python scripts/create_database.py
 # check data completeness against Intervals.icu
 venv/bin/python scripts/check_intervals_sync.py
+# re-import Garmin health data (e.g. after a watch synced late, or a new key)
+venv/bin/python ingest/import_garmin.py --days 30
 ```

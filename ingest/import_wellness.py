@@ -1,6 +1,8 @@
 """
 One-shot / re-runnable backfill: pulls wellness records from Intervals.icu
-and upserts them into ai-coach-v1's `daily_metrics` table.
+and upserts them into ai-coach-v1's `daily_metrics` table. Only the fitness model,
+vo2max, blood pressure, body and subjective fields - the health columns are
+Garmin's (ingest/import_garmin.py) and are never written here.
 
 Run: python ingest/import_wellness.py [--days 365]
 """
@@ -22,31 +24,25 @@ BASE_URL = "https://intervals.icu"
 UPSERT_SQL = """
     INSERT INTO daily_metrics (
         day, ctl, atl, ramp_rate,
-        sleep_score, sleep_duration_sec, sleep_quality, avg_sleeping_hr,
-        resting_hr, hrv, hrv_sdnn, spo2, respiration, systolic, diastolic, vo2max,
+        systolic, diastolic, vo2max,
         soreness, fatigue, stress, mood, motivation, readiness, injury,
-        weight_kg, body_fat_pct, kcal_consumed, steps,
+        weight_kg, body_fat_pct, kcal_consumed,
         comments, sport_info, raw_payload, updated_at
     ) VALUES (
         %(day)s, %(ctl)s, %(atl)s, %(ramp_rate)s,
-        %(sleep_score)s, %(sleep_duration_sec)s, %(sleep_quality)s, %(avg_sleeping_hr)s,
-        %(resting_hr)s, %(hrv)s, %(hrv_sdnn)s, %(spo2)s, %(respiration)s, %(systolic)s, %(diastolic)s, %(vo2max)s,
+        %(systolic)s, %(diastolic)s, %(vo2max)s,
         %(soreness)s, %(fatigue)s, %(stress)s, %(mood)s, %(motivation)s, %(readiness)s, %(injury)s,
-        %(weight_kg)s, %(body_fat_pct)s, %(kcal_consumed)s, %(steps)s,
+        %(weight_kg)s, %(body_fat_pct)s, %(kcal_consumed)s,
         %(comments)s, %(sport_info)s, %(raw_payload)s, now()
     )
     ON CONFLICT (day) DO UPDATE SET
         ctl = EXCLUDED.ctl, atl = EXCLUDED.atl, ramp_rate = EXCLUDED.ramp_rate,
-        sleep_score = EXCLUDED.sleep_score, sleep_duration_sec = EXCLUDED.sleep_duration_sec,
-        sleep_quality = EXCLUDED.sleep_quality, avg_sleeping_hr = EXCLUDED.avg_sleeping_hr,
-        resting_hr = EXCLUDED.resting_hr, hrv = EXCLUDED.hrv, hrv_sdnn = EXCLUDED.hrv_sdnn,
-        spo2 = EXCLUDED.spo2, respiration = EXCLUDED.respiration,
         systolic = EXCLUDED.systolic, diastolic = EXCLUDED.diastolic, vo2max = EXCLUDED.vo2max,
         soreness = EXCLUDED.soreness, fatigue = EXCLUDED.fatigue, stress = EXCLUDED.stress,
         mood = EXCLUDED.mood, motivation = EXCLUDED.motivation, readiness = EXCLUDED.readiness,
         injury = EXCLUDED.injury,
         weight_kg = EXCLUDED.weight_kg, body_fat_pct = EXCLUDED.body_fat_pct,
-        kcal_consumed = EXCLUDED.kcal_consumed, steps = EXCLUDED.steps,
+        kcal_consumed = EXCLUDED.kcal_consumed,
         comments = EXCLUDED.comments, sport_info = EXCLUDED.sport_info,
         raw_payload = EXCLUDED.raw_payload, updated_at = now()
     RETURNING (xmax = 0) AS inserted;

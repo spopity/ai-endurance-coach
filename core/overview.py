@@ -3,13 +3,13 @@ Athlete overview shared by the dashboard (/api/overview) and the Telegram
 morning briefing, so both always show the same numbers.
 """
 import logging
-import statistics
 import time
 from datetime import date, datetime, timedelta
 
 from core.db import get_connection
 from core.injury_checks import run_injury_checks
 from core.metrics import ftp_drift, load_athlete_profile, load_current_training_block
+from core.periodization import hrv_trend
 from core.race_planner import compute_race_plan
 from core.races import fetch_upcoming_races
 
@@ -48,14 +48,12 @@ def hrv_status() -> dict | None:
         SELECT day, hrv FROM daily_metrics
         WHERE hrv IS NOT NULL AND day > CURRENT_DATE - 67 ORDER BY day;
     """)
-    recent = [float(r["hrv"]) for r in rows if r["day"] > date.today() - timedelta(days=7)]
-    base = [float(r["hrv"]) for r in rows if r["day"] <= date.today() - timedelta(days=7)]
-    if len(recent) < 2 or len(base) < 10:
+    # Same formula the plan uses to time recovery weeks (core/periodization.py).
+    t = hrv_trend({r["day"]: float(r["hrv"]) for r in rows}, date.today())
+    if not t:
         return None
-    mean, sd = statistics.fmean(base), statistics.stdev(base)
-    avg7 = statistics.fmean(recent)
-    status = "low" if avg7 < mean - sd else "below" if avg7 < mean - 0.5 * sd else "normal"
-    return {"avg7": rnd(avg7), "baseline": rnd(mean), "sd": rnd(sd), "latest": rnd(rows[-1]["hrv"]), "status": status}
+    return {"avg7": rnd(t["avg7"]), "baseline": rnd(t["baseline"]), "sd": rnd(t["sd"]),
+            "latest": rnd(rows[-1]["hrv"]), "status": t["status"]}
 
 
 def next_race_summary() -> dict | None:
@@ -126,7 +124,8 @@ def build_overview() -> dict:
         "athlete": {"ftp": ftp, "lthr": profile.get("fthr"), "weight_kg": weight,
                     "wkg": round(ftp / weight, 2) if ftp and weight else None,
                     "eftp": rnd(profile.get("eftp"), 0), "max_hr": profile.get("max_hr"),
-                    "ftp_drift": ftp_drift(ftp, profile.get("eftp")),
+                    "ftp_set": profile.get("ftp_set"), "ftp_source": profile.get("ftp_source"),
+                    "ftp_drift": ftp_drift(profile.get("ftp_set"), profile.get("eftp"), profile),
                     "synced_at": profile.get("synced_at")},
         "fitness": fitness,
         "hrv": hrv_status(),

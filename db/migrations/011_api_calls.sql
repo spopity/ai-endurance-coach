@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS api_calls (
     id               bigserial PRIMARY KEY,
     ts               timestamptz NOT NULL DEFAULT now(),
-    service          text NOT NULL,        -- gemini | ollama | intervals | strava | telegram | open_meteo | withings | google
+    service          text NOT NULL,        -- gemini | ollama | intervals | strava | telegram | open_meteo | withings | garmin | google
     operation        text,                 -- normalised endpoint ("GET /api/v1/athlete/{id}/activities") or "chat"
     component        text,                 -- which part asked: ai_coach, supervisor, strava_note writer...
     trigger          text,                 -- why: chat, briefing, next_session, strava_note, sync...

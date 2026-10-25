@@ -38,13 +38,16 @@ export interface NextRace {
 export interface Overview {
   today: string;
   athlete: {
+    /** The FTP targets are built on: the set FTP, or eFTP after 8 weeks without an FTP test. */
     ftp: number | null;
+    ftp_set: number | null;
+    ftp_source: "set" | "eftp" | null;
     lthr: number | null;
     weight_kg: number | null;
     wkg: number | null;
     eftp: number | null;
     max_hr: number | null;
-    ftp_drift: { pct: number; status: "below" | "above" | "ok"; message: string } | null;
+    ftp_drift: { pct: number; status: "below" | "above" | "ok" | "due"; message: string } | null;
     synced_at: string | null;
   };
   fitness: { day: string; ctl: number; atl: number; tsb: number; ramp_rate: number | null; ctl_change_7d: number | null } | null;

@@ -52,6 +52,7 @@ export const SERVICE_META: Record<string, { label: string; color: string }> = {
   telegram: { label: "Telegram", color: "#2dd4bf" },
   open_meteo: { label: "Open-Meteo", color: "#fbbf24" },
   withings: { label: "Withings", color: "#f472b6" },
+  garmin: { label: "Garmin", color: "#60a5fa" },
   google: { label: "Google", color: "#fb7185" },
 };
 

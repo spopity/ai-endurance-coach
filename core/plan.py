@@ -90,8 +90,8 @@ def week_block(monday: date) -> dict | None:
     if not rows:
         return None
     block, mode = rows[0], get_focus()["mode"]
-    block["sessions"] = adjust_sessions(block["sessions"], block["is_deload"], mode)
-    block["primary_focus"] = adjust_focus_text(block["primary_focus"], block["is_deload"], mode)
+    block["sessions"] = adjust_sessions(block["sessions"], block["is_deload"], mode, block["phase"])
+    block["primary_focus"] = adjust_focus_text(block["primary_focus"], block["is_deload"], mode, block["phase"])
     return block
 
 
@@ -116,10 +116,10 @@ def upcoming_plan(weeks: int = 8) -> list[dict]:
             "week": start.isoformat(),
             "phase": block["phase"] if block else None,
             "is_deload": bool(block and block["is_deload"]),
-            "focus": adjust_focus_text(block["primary_focus"], block["is_deload"], mode) if block else None,
+            "focus": adjust_focus_text(block["primary_focus"], block["is_deload"], mode, block["phase"]) if block else None,
             "target_min": rnd(block["target_weekly_load_min"], 0) if block else None,
             "target_max": rnd(block["target_weekly_load_max"], 0) if block else None,
-            "sessions": {k: int((adjust_sessions(block["sessions"], block["is_deload"], mode) or {}).get(k, 0))
+            "sessions": {k: int((adjust_sessions(block["sessions"], block["is_deload"], mode, block["phase"]) or {}).get(k, 0))
                          for k in SESSION_KINDS} if block else None,
             "why": block["notes"] if block else None,
             "current": current,

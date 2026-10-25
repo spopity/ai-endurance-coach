@@ -14,7 +14,7 @@ import logging
 import os
 import secrets
 import time
-from datetime import date, time as dtime
+from datetime import date, datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -30,8 +30,11 @@ from core.chat import AGENT_DISPLAY_NAMES, SYNC_WINDOW_DAYS, ask_supervisor, new
 from core.history import MAX_HISTORY_MESSAGES
 from core.telegram_format import md_to_telegram_html, split_message
 from core.db import load_env
-from core import strava
-from core.next_session import ProposalError, apply_proposal, discard_proposal
+from core import availability, feedback, strava
+from core.next_session import (
+    ProposalError, apply_proposal, discard_proposal, latest_decision, replan as replan_next_session, session_line,
+    why_line,
+)
 from core.strava_notes import build_note, find_noteable, load_activity, publish_note, require_write_scope, strava_url
 from logging_config import setup_logging
 
@@ -62,6 +65,11 @@ HELP_TEXT = (
     "/briefing - today's briefing now (it also arrives every morning)\n"
     "To change your next session, agree it with the coach and say \"update my plan\" - "
     "nothing changes until you tap Apply.\n"
+    "Tell me when you can't train (\"sick for 3 days\", \"away until Sunday\", \"only 40 min today\") - "
+    "I save the exact dates and plan around them; normal training resumes by itself afterwards. "
+    "Moving or swapping sessions between days works the same way (\"long ride Thursday instead of Tuesday\").\n"
+    "After each hard ride or run I ask for RPE and how your legs feel; easy sessions and gym are covered by the "
+    "quick morning check-in.\n"
     "/reset - start a fresh conversation\n"
     "/sync - pull the latest activities + wellness from Intervals.icu\n"
     "/help - show this message"
@@ -354,6 +362,7 @@ async def deliver_briefing(bot, chat_id: int, chat_data: dict):
         get_history(chat_data)  # resets the thread first if it went idle
         remember_turn(chat_data, "(morning briefing)", "ai_coach", text)
         logger.info(f"Briefing sent to {chat_id}.")
+        await send_checkin(bot, chat_id)
     except Exception as e:
         logger.error("Briefing failed", exc_info=True)
         await bot.send_message(chat_id, f"❌ Morning briefing failed: {e}")
@@ -364,6 +373,121 @@ async def deliver_briefing(bot, chat_id: int, chat_data: dict):
 
 async def job_briefing(context: ContextTypes.DEFAULT_TYPE):
     await deliver_briefing(context.bot, context.job.chat_id, context.chat_data)
+
+
+# --- Athlete feedback (core/feedback.py): RPE + legs after each session, morning check-in ---
+# A few taps each. Answers that change readiness re-plan the next session and say so.
+
+FEEDBACK_EVERY_MINUTES = 10
+QUIET_FROM_HOUR, QUIET_UNTIL_HOUR = 22, 7  # local time: no session questions at night
+
+
+def _local_today() -> date:
+    return datetime.now(LOCAL_TZ).date()
+
+
+def rpe_buttons(eid: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(str(n), callback_data=f"fb:rpe:{eid}:{n}") for n in row]
+                                 for row in ((1, 2, 3, 4, 5), (6, 7, 8, 9, 10))])
+
+
+def legs_buttons(eid: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"fb:legs:{eid}:{key}")
+                                  for key, label in feedback.LEGS.items()]])
+
+
+def body_buttons(day: str) -> InlineKeyboardMarkup:
+    labels = {**feedback.BODY, "ill": "🤒 Ill"}
+    keys = list(labels)
+    return InlineKeyboardMarkup([[InlineKeyboardButton(labels[k], callback_data=f"fb:body:{day}:{k}") for k in keys[:4]],
+                                 [InlineKeyboardButton(labels[keys[4]], callback_data=f"fb:body:{day}:{keys[4]}")]])
+
+
+def motivation_buttons(day: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"fb:mot:{day}:{key}")
+                                  for key, label in feedback.MOTIVATION.items()]])
+
+
+async def send_checkin(bot, chat_id: int):
+    day = _local_today()
+    if await asyncio.to_thread(feedback.today_checkin, day):
+        return
+    await asyncio.to_thread(feedback.mark_checkin_asked, day)
+    start = datetime.combine(day - timedelta(days=1), dtime(0), LOCAL_TZ)
+    yesterday = await asyncio.to_thread(feedback.checkin_sessions, start, start + timedelta(days=1))
+    after = (" after yesterday's " + ", ".join(f"{a['name']} ({a['type']})" for a in yesterday)) if yesterday else ""
+    await bot.send_message(chat_id, f"☀️ Quick check-in - how does your body feel this morning{after}?",
+                           reply_markup=body_buttons(day.isoformat()))
+
+
+async def job_session_feedback(context: ContextTypes.DEFAULT_TYPE):
+    hour = datetime.now(LOCAL_TZ).hour
+    if hour >= QUIET_FROM_HOUR or hour < QUIET_UNTIL_HOUR:
+        return
+    for a in await asyncio.to_thread(feedback.sessions_to_ask):
+        await asyncio.to_thread(feedback.mark_asked, a["external_id"])
+        minutes = round((a["moving_time_sec"] or 0) / 60)
+        await context.bot.send_message(
+            context.job.chat_id,
+            f"🏁 {a['name']} ({a['type']}, {minutes} min)\nHow hard was it? RPE 1 = very easy ... 10 = all out",
+            reply_markup=rpe_buttons(a["external_id"]))
+        logger.info(f"Asked for feedback on {a['external_id']}.")
+
+
+async def replan_and_send(bot, chat_id: int, reason: str):
+    """Your answer changed things: recompute the week and the next session, and send it."""
+    await asyncio.to_thread(replan_next_session)
+    d = await asyncio.to_thread(latest_decision)
+    if d:
+        why = why_line(d["decision"])
+        await send_markdown_to(bot, chat_id, f"🔄 {reason} - next session updated:\n**{session_line(d['decision'])}**"
+                               + (f"\n_{why}_" if why else ""))
+
+
+async def on_feedback_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if update.effective_user.id not in context.bot_data.get("allowed_ids", []):
+        await query.answer("Not allowed.")
+        return
+    _, step, key, value = query.data.split(":", 3)
+    chat_id = query.message.chat_id
+    await query.answer()
+    try:
+        if step == "rpe":
+            await asyncio.to_thread(feedback.save_session, key, rpe=int(value))
+            await query.edit_message_text(f"{query.message.text.splitlines()[0]}\nRPE {value} ✓ - and your legs?",
+                                          reply_markup=legs_buttons(key))
+        elif step == "legs":
+            await asyncio.to_thread(feedback.save_session, key, legs=value)
+            await query.edit_message_text(f"{query.message.text.splitlines()[0]}\n"
+                                          f"{query.message.text.splitlines()[-1].split(' - ')[0]}, legs "
+                                          f"{feedback.LEGS[value].lower()} ✓ Thanks!")
+            _, amber = await asyncio.to_thread(feedback.signals)
+            if any("last hard session" in r for r in amber):
+                await replan_and_send(context.bot, chat_id, "That session took more out of you than planned")
+        elif step == "body":
+            day = date.fromisoformat(key)
+            await asyncio.to_thread(feedback.save_checkin, day, body=value)
+            if value == "ill":
+                await asyncio.to_thread(availability.add, "sick", day, 1, None, "morning check-in")
+                await query.edit_message_text(
+                    f"🤒 Noted - ill today ({day:%a %d %b}), no training. Get well! If it lasts longer, just tell me "
+                    "(e.g. \"sick for 3 days\") and I'll keep the dates; normal training resumes by itself after them.")
+                await replan_and_send(context.bot, chat_id, "You're ill today")
+            else:
+                await query.edit_message_text(f"Body: {feedback.BODY[value].lower()} ✓ - and motivation?",
+                                              reply_markup=motivation_buttons(key))
+        elif step == "mot":
+            day = date.fromisoformat(key)
+            await asyncio.to_thread(feedback.save_checkin, day, motivation=value)
+            c = await asyncio.to_thread(feedback.today_checkin, day)
+            await query.edit_message_text(f"Body: {feedback.BODY.get(c['body'], '?').lower()}, motivation: "
+                                          f"{feedback.MOTIVATION[value].lower()} ✓ Thanks!")
+            if c["body"] == "very_sore" or (c["body"] == "sore" and value == "low"):
+                await replan_and_send(context.bot, chat_id, "Taking your check-in into account")
+    except Exception as e:
+        logger.error("Feedback button failed", exc_info=True)
+        await context.bot.send_message(chat_id, f"❌ Couldn't save that: {e}")
 
 
 async def cmd_briefing(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -420,6 +544,7 @@ def main():
     application.add_handler(CommandHandler("strava", cmd_strava, filters=allowed))
     application.add_handler(CallbackQueryHandler(on_strava_button, pattern=r"^strava:"))
     application.add_handler(CallbackQueryHandler(on_next_session_button, pattern=r"^nextsession:"))
+    application.add_handler(CallbackQueryHandler(on_feedback_button, pattern=r"^fb:"))
     application.add_handler(CommandHandler("reset", cmd_reset, filters=allowed))
     application.add_handler(CommandHandler("sync", cmd_sync, filters=allowed))
     application.add_handler(CommandHandler("briefing", cmd_briefing, filters=allowed))
@@ -431,7 +556,10 @@ def main():
     briefing_at = dtime(hh, mm, tzinfo=LOCAL_TZ)
     for chat_id in allowed_ids:  # private chat id == user id
         application.job_queue.run_daily(job_briefing, briefing_at, chat_id=chat_id, name=f"briefing-{chat_id}")
-    logger.info(f"Briefing scheduled daily at {briefing_at:%H:%M} {LOCAL_TZ.key}.")
+        application.job_queue.run_repeating(job_session_feedback, FEEDBACK_EVERY_MINUTES * 60, first=60,
+                                            chat_id=chat_id, name=f"feedback-{chat_id}")
+    logger.info(f"Briefing scheduled daily at {briefing_at:%H:%M} {LOCAL_TZ.key}; "
+                f"session feedback checked every {FEEDBACK_EVERY_MINUTES} min.")
 
     logger.info(f"Starting Telegram bot for {len(allowed_ids)} allowed user(s)...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)

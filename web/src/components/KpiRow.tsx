@@ -63,7 +63,7 @@ export function KpiRow({ data }: { data: Overview }) {
         sub={f ? `Acute:chronic ${(f.atl / Math.max(f.ctl, 1)).toFixed(2)}` : undefined} />
       <Kpi label="Form" value={signed(f?.tsb, 0)} unit="TSB" accent={zone?.color ?? C.tsb} icon={<Battery size={16} />}
         sub={zone && <span style={{ color: zone.color }}>{zone.label}</span>} />
-      <Kpi label="FTP" value={fmt(a.ftp, 0)} unit="W" accent="#fb923c" icon={<Gauge size={16} />}
+      <Kpi label={a.ftp_source === "eftp" ? "FTP (from eFTP)" : "FTP"} value={fmt(a.ftp, 0)} unit="W" accent="#fb923c" icon={<Gauge size={16} />}
         sub={<span title={drift?.message}>
           {fmt(a.wkg, 2)} W/kg
           {a.eftp ? <> · <span style={{ color: driftColor }}>eFTP {fmt(a.eftp, 0)} W{drift && drift.status !== "ok" ? ` (${drift.pct > 0 ? "+" : ""}${drift.pct.toFixed(0)}%)` : ""}</span></> : null}

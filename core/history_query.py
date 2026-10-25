@@ -28,12 +28,23 @@ _STARTS_LIKE_SELECT = re.compile(r"^\s*(select|with)\b", re.I)
 SCHEMA_GUIDE = """PostgreSQL 16. Tables you can read (all times UTC; the athlete lives in Europe/Bratislava -
 use (start_time AT TIME ZONE 'Europe/Bratislava')::date for the local day of an activity):
 
-daily_metrics - one row per day (`day` DATE, primary key). Intervals.icu wellness + fitness model.
-  ctl (fitness, 42-day load avg), atl (fatigue, 7-day), ramp_rate (CTL change/week). TSB (form) = ctl - atl (not stored).
-  hrv (rMSSD, ms), hrv_sdnn, resting_hr (bpm), avg_sleeping_hr, sleep_score (0-100), sleep_duration_sec,
-  sleep_quality, spo2, respiration, vo2max, weight_kg, body_fat_pct, steps, kcal_consumed,
+daily_metrics - one row per day (`day` DATE, primary key). Garmin health data + Intervals.icu fitness model.
+  Intervals.icu: ctl (fitness, 42-day load avg), atl (fatigue, 7-day), ramp_rate (CTL change/week).
+  TSB (form) = ctl - atl (not stored). vo2max. weight_kg (Withings), body_fat_pct, kcal_consumed.
+  Garmin (sleep fields describe the night that ENDS on `day`):
+  sleep_score (0-100), sleep_quality (1 excellent - 4 poor), sleep_duration_sec, sleep_start, sleep_end (TIMESTAMPTZ),
+  sleep_deep_sec, sleep_light_sec, sleep_rem_sec, sleep_awake_sec, sleep_unmeasurable_sec, nap_sec, sleep_awake_count,
+  sleep_stress (0-100), sleep_respiration (+ _low, _high, breaths/min), sleep_feedback, avg_sleeping_hr (bpm).
+  hrv (overnight rMSSD avg, ms), hrv_weekly_avg, hrv_5min_high, hrv_status (BALANCED/UNBALANCED/LOW/POOR),
+  hrv_baseline_low / hrv_baseline_high (Garmin's balanced band), hrv_low_upper.
+  resting_hr, resting_hr_7d_avg, min_hr, max_hr (bpm). stress_avg, stress_max (0-100 all day),
+  stress_rest_sec, stress_low_sec, stress_medium_sec, stress_high_sec, stress_qualifier.
+  body_battery_wake, body_battery_high, body_battery_low, body_battery_charged, body_battery_drained (0-100).
+  respiration (awake avg) + respiration_low/_high. spo2 (daily avg %), spo2_lowest, spo2_sleep_avg.
+  steps, total_kcal, active_kcal, intensity_min_moderate, intensity_min_vigorous, floors_ascended,
+  wellness_distance_m, fitness_age.
   subjective 1-4/5 scales (mostly empty): soreness, fatigue, stress, mood, motivation, readiness, injury.
-  comments TEXT. raw_payload JSONB (full Intervals.icu record - avoid selecting it, it is large).
+  comments TEXT. raw_payload / garmin_payload JSONB (full source records - avoid selecting them, they are large).
 
 activities - one row per workout. ALWAYS filter `superseded_by IS NULL` (superseded rows are duplicates).
   external_id (e.g. 'i123456789' - pass to get_activity_details / analyze_power_pacing), name, type
@@ -121,6 +132,10 @@ def data_coverage() -> str:
                 UNION ALL SELECT 'resting_hr', MIN(day), MAX(day), COUNT(*) FROM daily_metrics WHERE resting_hr IS NOT NULL
                 UNION ALL SELECT 'sleep_score', MIN(day), MAX(day), COUNT(*) FROM daily_metrics WHERE sleep_score IS NOT NULL
                 UNION ALL SELECT 'sleep_duration', MIN(day), MAX(day), COUNT(*) FROM daily_metrics WHERE sleep_duration_sec IS NOT NULL
+                UNION ALL SELECT 'sleep_stages', MIN(day), MAX(day), COUNT(*) FROM daily_metrics WHERE sleep_deep_sec IS NOT NULL
+                UNION ALL SELECT 'body_battery', MIN(day), MAX(day), COUNT(*) FROM daily_metrics WHERE body_battery_wake IS NOT NULL
+                UNION ALL SELECT 'stress', MIN(day), MAX(day), COUNT(*) FROM daily_metrics WHERE stress_avg IS NOT NULL
+                UNION ALL SELECT 'spo2', MIN(day), MAX(day), COUNT(*) FROM daily_metrics WHERE spo2 IS NOT NULL
                 UNION ALL SELECT 'weight', MIN(day), MAX(day), COUNT(*) FROM daily_metrics WHERE weight_kg IS NOT NULL
                 UNION ALL SELECT 'activities', MIN(start_time)::date, MAX(start_time)::date, COUNT(*)
                   FROM activities WHERE superseded_by IS NULL

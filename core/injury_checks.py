@@ -10,7 +10,7 @@ Used by:
 - the dashboard (structured dict).
 
 Areas covered: training load (ACWR, TSB, ramp rate, monotony, weeks without
-recovery), recovery (HRV, resting HR, sleep vs baseline), cardiovascular drift
+recovery), intensity distribution (time in zone vs a pyramidal split), recovery (HRV, resting HR, sleep vs baseline), cardiovascular drift
 (aerobic decoupling, efficiency factor trend), biomechanics (cadence vs
 baseline, L/R balance), subjective (feel/RPE vs objective data) and running
 volume progression.
@@ -63,7 +63,7 @@ def _load_data(conn, today: date) -> dict:
             SELECT external_id, start_time, type, name, moving_time_sec, distance_m, training_load,
                    intensity_factor, variability_index, decoupling_pct, efficiency_factor,
                    avg_cadence, avg_lr_balance, avg_power_w, feel, rpe,
-                   raw_metrics->'icu_zone_times' AS zone_times
+                   raw_metrics->'icu_zone_times' AS zone_times, raw_payload->'icu_hr_zone_times' AS hr_zone_times
             FROM activities
             WHERE superseded_by IS NULL AND start_time >= %s
             ORDER BY start_time;
@@ -167,6 +167,68 @@ def check_load(data, today, findings, checked, gaps):
     elif streak >= 4:
         findings.append(_finding("caution", "Load", f"{streak} weeks without a recovery week",
             "Most periodised plans insert a recovery week every 3-4 weeks; one is due."))
+
+
+# --- intensity distribution ---
+
+# Three-zone model: low = below the first threshold (power Z1-Z2 / HR Z1-Z2), moderate =
+# tempo to threshold (Z3-Z4), high = above threshold (Z5+). Pyramidal, as pro cyclists
+# train: most time low, less moderate, least high (Tour top-5 riders ~81/13/6).
+TID_DAYS = 28
+TID_MIN_HOURS = 5
+TID_LOW_MIN, TID_MODERATE_MAX, TID_HIGH_MAX = 70, 25, 12   # % of time
+NOT_ENDURANCE = {"WeightTraining", "Walk", "Yoga", "Workout"}
+
+
+def _three_zones(a) -> tuple[float, float, float] | None:
+    """(low, moderate, high) seconds from power zones if the activity has them, else HR zones."""
+    power = {z["id"]: z.get("secs") or 0 for z in (a.get("zone_times") or []) if isinstance(z, dict)}
+    if sum(v for k, v in power.items() if k != "SS"):  # SS overlaps Z3/Z4
+        return (power.get("Z1", 0) + power.get("Z2", 0), power.get("Z3", 0) + power.get("Z4", 0),
+                sum(power.get(z, 0) for z in ("Z5", "Z6", "Z7")))
+    hr = [s or 0 for s in (a.get("hr_zone_times") or [])]
+    if sum(hr):
+        return sum(hr[:2]), sum(hr[2:4]), sum(hr[4:])
+    return None
+
+
+def intensity_distribution(activities, today: date) -> dict | None:
+    """Time-in-zone split over the last TID_DAYS: {low, moderate, high} in %, hours."""
+    since = today - timedelta(days=TID_DAYS)
+    totals = [0.0, 0.0, 0.0]
+    for a in activities:
+        if a["day"] < since or a["type"] in NOT_ENDURANCE:
+            continue
+        z = _three_zones(a)
+        if z:
+            totals = [t + v for t, v in zip(totals, z)]
+    secs = sum(totals)
+    if secs < TID_MIN_HOURS * 3600:
+        return None
+    low, mod, high = (round(100 * t / secs) for t in totals)
+    return {"low": low, "moderate": mod, "high": high, "hours": round(secs / 3600, 1), "days": TID_DAYS}
+
+
+def check_intensity(data, today, findings, checked, gaps):
+    tid = intensity_distribution(data["activities"], today)
+    if not tid:
+        gaps.append(f"Under {TID_MIN_HOURS} h with zone data in the last {TID_DAYS} days - intensity distribution skipped.")
+        return
+    checked.append("intensity distribution (time in zone vs a pyramidal split)")
+    split = f"{tid['low']}% easy / {tid['moderate']}% moderate / {tid['high']}% hard over {tid['hours']} h"
+    if tid["moderate"] > TID_MODERATE_MAX:
+        findings.append(_finding("caution", "Intensity", f"Too much moderate intensity ({tid['moderate']}%)",
+            f"Last {tid['days']} days: {split}. A pyramidal plan keeps tempo/threshold under ~{TID_MODERATE_MAX}%: "
+            "make easy rides truly easy (Zone 2 or below) so the quality sessions can be quality."))
+    elif tid["low"] < TID_LOW_MIN:
+        findings.append(_finding("caution", "Intensity", f"Too little easy time ({tid['low']}%)",
+            f"Last {tid['days']} days: {split}. Aim for {TID_LOW_MIN}-85% easy - the aerobic base comes from it."))
+    elif tid["high"] > TID_HIGH_MAX:
+        findings.append(_finding("caution", "Intensity", f"A lot of hard work ({tid['high']}%)",
+            f"Last {tid['days']} days: {split}. Above ~{TID_HIGH_MAX}% hard, recovery usually can't keep up - "
+            "keep it to 1-2 hard sessions a week."))
+    else:
+        findings.append(_finding("info", "Intensity", "Intensity distribution is pyramidal", f"Last {tid['days']} days: {split}."))
 
 
 # --- recovery ---
@@ -438,7 +500,8 @@ def run_injury_checks(today: date | None = None) -> dict:
         conn.close()
 
     findings, checked, gaps = [], [], []
-    for check in (check_load, check_recovery, check_drift, check_biomechanics, check_subjective, check_running):
+    for check in (check_load, check_intensity, check_recovery, check_drift, check_biomechanics, check_subjective,
+                  check_running):
         try:
             check(data, today, findings, checked, gaps)
         except Exception as e:

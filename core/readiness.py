@@ -1,10 +1,12 @@
 """
-Readiness verdict (green/amber/red) from form, HRV trend and the injury checks.
-Shared by the morning briefing and the coach agents' context, so every channel
-judges "can I train hard?" from the same signals.
+Readiness verdict (green/amber/red) from form, HRV trend, the injury checks and the
+athlete's own feedback (morning check-in, last session's RPE and legs). Shared by the
+morning briefing and the coach agents' context, so every channel judges "can I train
+hard?" from the same signals.
 """
 import logging
 
+from core.feedback import signals as feedback_signals
 from core.injury_checks import run_injury_checks
 from core.overview import cached, hrv_status, query
 
@@ -13,9 +15,11 @@ logger = logging.getLogger("AI_COACH_V1.readiness")
 EMOJI = {"red": "🔴", "amber": "🟠", "green": "🟢"}
 
 
-def verdict(tsb: float | None, hrv: dict | None, injury_overall: str | None) -> tuple[str, str]:
-    """(level, one-line verdict) - level is 'red', 'amber' or 'green'."""
-    reasons_red, reasons_amber = [], []
+def verdict(tsb: float | None, hrv: dict | None, injury_overall: str | None,
+            subjective: tuple[list, list] | None = None) -> tuple[str, str]:
+    """(level, one-line verdict) - level is 'red', 'amber' or 'green'. `subjective` is
+    (red, amber) reasons from the athlete's own feedback (core/feedback.signals)."""
+    reasons_red, reasons_amber = list((subjective or ([], []))[0]), list((subjective or ([], []))[1])
     if tsb is not None and tsb <= -30:
         reasons_red.append("very deep fatigue")
     elif tsb is not None and tsb <= -20:
@@ -43,7 +47,12 @@ def readiness_context(tsb: float | None) -> dict:
     except Exception as e:
         logger.warning(f"Injury checks failed: {e}")
         injury = None
-    level, text = verdict(tsb, hrv, injury and injury["overall"])
+    try:
+        subjective = feedback_signals()
+    except Exception as e:
+        logger.warning(f"Athlete feedback unavailable: {e}")
+        subjective = None
+    level, text = verdict(tsb, hrv, injury and injury["overall"], subjective)
     return {
         "level": level,
         "verdict": text,

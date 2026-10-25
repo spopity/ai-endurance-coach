@@ -18,10 +18,17 @@ export function NextSessionCard({ refreshKey, onAsk }: { refreshKey: number; onA
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.nextSession().then(setData).catch(() => setFailed(true));
+    api
+      .nextSession()
+      .then((ns) => {
+        setData(ns);
+        // No current decision (none yet, or a day passed without training): the coach decides afresh.
+        if (!ns.decision) decide(false);
+      })
+      .catch(() => setFailed(true));
   }, [refreshKey]);
 
-  const decide = (redo: boolean) => {
+  function decide(redo: boolean) {
     setDeciding(true);
     setError(null);
     api
@@ -29,7 +36,7 @@ export function NextSessionCard({ refreshKey, onAsk }: { refreshKey: number; onA
       .then(setData)
       .catch((e: Error) => setError(e.message))
       .finally(() => setDeciding(false));
-  };
+  }
 
   const r = data?.readiness ? READINESS[data.readiness.level] : null;
   const d = data?.decision;
@@ -87,7 +94,7 @@ export function NextSessionCard({ refreshKey, onAsk }: { refreshKey: number; onA
       ) : (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-slate-400">
-            No current decision - it's made automatically after each ride or run.
+            No current decision - it's made after each activity and re-checked every morning.
           </p>
           <button
             onClick={() => decide(false)}

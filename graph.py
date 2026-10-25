@@ -97,7 +97,11 @@ Route the user's query to the single most appropriate specialist agent:
   e.g. "where will my CTL be after 4 weeks at 350 TSS/week?", "what happens to my form if I rest 5 days?".
 - ai_coach: the primary coach - general training advice, workout suggestions, and analysis of past
   activities. Default here for anything about a specific past workout. Also ALL requests to save, update, change or
-  swap the planned next session ("update my plan", "make that my next session").
+  swap the planned next session ("update my plan", "make that my next session"), and moving or swapping
+  sessions between days ("do the long ride Saturday instead of Tuesday"). Also ALL statements about the
+  athlete's availability - sick / ill and can't train, away or travelling, no time, or only time for a shorter
+  session ("I'm sick, no training for 3 days", "away until Sunday", "only 40 min today") - even when illness is
+  mentioned, these go to ai_coach (it saves the dates), not injury_prevention.
 
 Recent conversation (oldest first; [name] is the agent that answered that turn):
 {history}

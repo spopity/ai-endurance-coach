@@ -79,8 +79,8 @@ wellness_summary_tool = StructuredTool.from_function(
     func=_as_json(wellness_summary),
     name="wellness_summary",
     description=(
-        "Locally computed statistics for daily wellness/fitness metrics (HRV, resting HR, sleep, CTL, ATL, TSB, "
-        "ramp rate, weight, steps) over a period: data coverage, mean, median, SD, min/max with dates, first vs "
+        "Locally computed statistics for daily wellness/fitness metrics (HRV, resting HR, sleep and sleep stages, "
+        "Body Battery, stress, respiration, SpO2, intensity minutes, CTL, ATL, TSB, ramp rate, weight, steps) over a period: data coverage, mean, median, SD, min/max with dates, first vs "
         "last 7 days, trend per week, a weekly/monthly series, and optionally the same stats for a comparison "
         "period with the difference. Use for any trend, baseline or 'compared to last year' question."
     ),
@@ -266,3 +266,108 @@ def build_propose_session_tool(turn_id: str) -> StructuredTool:
             "reason, e.g. 'Swapped the run for a ride at the athlete's request'."
         ),
     )
+
+
+def build_availability_tools() -> list[StructuredTool]:
+    """Tools for ai_coach in a live chat turn: save what the athlete says about days they
+    can't train or can only train briefly (core/availability.py). Saved straight away - it is
+    the athlete's own statement - then the plan and the next session are recomputed."""
+    import threading
+    from datetime import date, timedelta
+    from typing import Literal, Optional
+
+    from core import availability
+    from core.next_session import replan
+
+    class RecordArgs(BaseModel):
+        kind: Literal["sick", "away", "unavailable", "limited"] = Field(description=(
+            "sick: ill, no training. away: travelling / away, no training. unavailable: at home but no time "
+            "to train. limited: can train, but only up to max_minutes per day."))
+        start_date: str = Field(description="First day, YYYY-MM-DD (usually today: metrics_context.current_date).")
+        days: int = Field(description="How many consecutive days, counting start_date (\"3 days\" from today = "
+                                      "today and the next 2 dates).")
+        max_minutes: Optional[int] = Field(None, description="Only for limited: the most training time per day.")
+        note: str = Field("", description="The athlete's reason in a few words, e.g. 'flu', 'work trip to Vienna'.")
+
+    def _replan():
+        """Recompute this week's plan and the next session in the background (the reply goes on)."""
+        def work():
+            try:
+                replan()
+            except Exception:
+                import logging
+                logging.getLogger("AI_COACH_V1.tools").error("Re-plan after availability change failed", exc_info=True)
+        threading.Thread(target=work, daemon=True).start()
+
+    def record_availability(kind: str, start_date: str, days: int, max_minutes: Optional[int] = None,
+                            note: str = "") -> str:
+        start = date.fromisoformat(start_date)
+        dropped = [p for d in range(days) if kind in availability.NO_TRAINING
+                   and (p := availability.planned_session(start + timedelta(days=d)))]
+        try:
+            e = availability.add(kind, start, days, max_minutes, note)
+        except ValueError as err:
+            return f"Not saved: {err}"
+        _replan()
+        resume = date.fromisoformat(e["dates"][-1]) + timedelta(days=1)
+        what = availability.KINDS[kind] + (f" (at most {max_minutes} min a day)" if kind == "limited" else "")
+        return (f"Saved as {what} on exactly these dates: {', '.join(e['dates'])} (entry {e['id']}). "
+                + (f"Normal training resumes automatically on {resume.isoformat()}. " if kind != "limited" else "")
+                + "The week's targets and the next session are being recomputed. Confirm the exact dates to the "
+                "athlete in one line and say they can correct them."
+                + ("".join(f" This removed the session planned on {p['dates'][0]} ({p['session']}) - tell the athlete "
+                           "and offer to pin it to another day." for p in dropped)))
+
+    class PlanArgs(BaseModel):
+        day: str = Field(description="The date the session is pinned to, YYYY-MM-DD.")
+        session: str = Field(description="One line: sport, duration and intensity/targets (watts for rides, HR or feel "
+                                          "for runs), e.g. 'Long endurance ride 3 h Zone 2 (157-211 W)'.")
+        note: str = Field("", description="Why, in a few words, e.g. 'moved from Tuesday - swapped with the intervals'.")
+
+    def plan_session(day: str, session: str, note: str = "") -> str:
+        try:
+            e = availability.add("planned", date.fromisoformat(day), 1, note=note, session=session)
+        except ValueError as err:
+            return f"Not saved: {err}"
+        _replan()
+        return (f"Pinned to {e['dates'][0]}: {session} (entry {e['id']}). That day's session will be exactly this "
+                "unless readiness, illness or an injury flag makes it unsafe. Confirm the date(s) to the athlete in "
+                "one line.")
+
+    def cancel_availability(entry_id: Optional[str] = None, from_date: Optional[str] = None) -> str:
+        changed = availability.cancel(entry_id, date.fromisoformat(from_date) if from_date else None)
+        if not changed:
+            return "Nothing to cancel - no matching saved dates from that day on."
+        _replan()
+        return (f"Cancelled from {from_date or date.today().isoformat()}: "
+                + "; ".join(f"{e['kind']} (entry {e['id']})" for e in changed)
+                + ". Normal training applies from then; the plan and next session are being recomputed.")
+
+    return [
+        StructuredTool.from_function(
+            func=record_availability, name="record_availability", args_schema=RecordArgs,
+            description=(
+                "Save days the athlete can't train or can only train briefly - call it as soon as they say so "
+                "('I'm sick, no training for 3 days', 'I'm away until Sunday', 'next 4 days I can't train', "
+                "'I only have 40 min today, can I do a shorter version?'). Work out the exact dates from "
+                "metrics_context.current_date: 'N days' starts today unless they say otherwise ('from tomorrow', "
+                "'next Tuesday'); 'until Sunday' includes Sunday. A new entry replaces the same dates of older ones."),
+        ),
+        StructuredTool.from_function(
+            func=plan_session, name="plan_session", args_schema=PlanArgs,
+            description=(
+                "Pin a session to a date when the athlete moves or swaps training between days ('do the long ride "
+                "Saturday instead of Tuesday and the intervals on Tuesday', 'move tomorrow's run to Friday'). One call "
+                "per date - a swap is two calls. Only when the athlete asks for it or agrees to it. A day already "
+                "saved as no-training can't get a session (cancel that first). It replaces an earlier planned "
+                "session on the same date."),
+        ),
+        StructuredTool.from_function(
+            func=cancel_availability, name="cancel_availability",
+            description=(
+                "End saved availability early when the athlete says so ('I'm better', 'the trip is cancelled', "
+                "'I do have time after all'), or drop a pinned session ('forget the Saturday plan'). entry_id from "
+                "metrics_context.availability.entries (omit to end every current entry); from_date YYYY-MM-DD, "
+                "default today. Dates before from_date are kept."),
+        ),
+    ]

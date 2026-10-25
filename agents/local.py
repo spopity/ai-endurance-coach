@@ -90,6 +90,20 @@ def _metrics(state) -> str:
     r = m.get("readiness")
     if r:
         lines.append(f"READINESS: {r['level'].upper()} - {r['verdict']}.")
+    back = m.get("return_to_training")
+    if back and back.get("stage") != "on_plan":
+        lines.append(f"RETURN TO TRAINING ({back['stage'].replace('_', ' ')}): {back['guidance']}")
+    av = m.get("availability")
+    if av and av.get("entries"):
+        lines.append(f"AVAILABILITY - today: {av['today']}; next day the athlete can train: {av['next_training_day']}. "
+                     + "; ".join(f"{e['meaning']} {e['from']}" + (f" to {e['until']}" if e["until"] != e["from"] else "")
+                                 + (f" (max {e['max_minutes']} min)" if e.get("max_minutes") else "")
+                                 + (f": {e['session']}" if e.get("session") else "") for e in av["entries"])
+                     + ". Never plan training on a no-training day; fit limited days inside the minutes; on a day "
+                     "with a planned session, prescribe exactly that session.")
+    fb = (m.get("athlete_feedback") or {}).get("morning_checkin")
+    if fb:
+        lines.append(f"Morning check-in: body {fb['body']}, motivation {fb['motivation']}.")
     nd = m.get("next_session_decided")
     if nd:
         lines.append(f"Next session ALREADY DECIDED after {nd['after_activity']} (the athlete has seen it): "
@@ -127,12 +141,15 @@ athlete. Be practical, specific and brief (under 200 words), in Markdown.
 
 Rules, in priority order:
 1. If the athlete asks for rest/easy/hard/short/long, follow that.
-2. READINESS RED, poor sleep (sleep_score < 70 or under {sleep_min_hours:g} h), 3+ days without training, or a HIGH finding in the
-   injury report: only rest or an easy Zone 1-2 session, no intervals. READINESS AMBER: no VO2max, at most a
-   controlled tempo or sweet spot session. CAUTION findings (such as HR drift) do NOT cancel the
+2. READINESS RED, poor sleep (sleep_score < 70 or under {sleep_min_hours:g} h), or a HIGH finding in the
+   injury report: only rest or an easy Zone 1-2 session, no intervals. After days without training, follow the
+   RETURN TO TRAINING line in the context exactly. READINESS AMBER: no VO2max (not even short VO2 touches or
+   sprints), at most a controlled tempo or sweet spot session. CAUTION findings (such as HR drift) do NOT cancel the
    intervals the plan calls for - mention them briefly and keep the plan's session.
 3. Follow this week's training plan: its focus, phase (deload week = no intervals), TSS target vs load so far, and
-   the sessions still to do. If the next session falls in a new week, plan for THAT week. Weights can be on the same day as a ride; never hard leg work
+   the sessions still to do. If fewer days are left than sessions, keep the key ones (the quality session and the
+   long ride/run) and drop extra easy rides and gym - never two hard days in a row, never cram missed load.
+   If the next session falls in a new week, plan for THAT week. Weights can be on the same day as a ride; never hard leg work
    the day after a leg session. Only a gym session marked "legs worked" counts as one - any other gym session
    did not load the legs and is no reason to go easier on the bike or run.
 4. When suggesting the next session, give ONE definitive session with duration and intensity: rides in watts
@@ -147,7 +164,9 @@ don't re-judge them); never invent data.
 If a next session is ALREADY DECIDED in the context, stick to it unless the athlete's request changes things - then
 say what changed. Call it "your next session", not "tomorrow" (early in the day, the next session is usually today).
 You cannot save or change the decided next session. If the athlete asks you to update or save it, say that
-saving a change needs Local only switched off, and never claim it is updated.{run_rules}"""
+saving a change needs Local only switched off, and never claim it is updated. The same for days they can't train
+(sick, away, no time) or a shorter session: you can't save those dates - tell them to switch Local only off and say
+it again, and meanwhile follow what they said.{run_rules}"""
 
 DUAL_RUN_RULES = """
 Dual-sport winter block - runs matter as much as rides:

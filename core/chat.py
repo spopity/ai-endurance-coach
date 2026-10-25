@@ -10,10 +10,11 @@ from langchain_core.messages import HumanMessage
 
 from core.api_log import trigger, trigger_end, trigger_start
 from core.history import to_messages
-from core.next_session import proposal_for_turn
+from core.next_session import proposal_for_turn, refresh as refresh_next_session
 from graph import agent_platform
 from ingest.import_intervals import sync_activities
 from ingest.import_wellness import sync_wellness
+from ingest.import_garmin import sync_garmin
 from ingest.import_profile import sync_profile
 
 logger = logging.getLogger("AI_COACH_V1.chat")
@@ -100,7 +101,8 @@ def ask_supervisor_sync(
 
 
 async def run_sync(days: int = SYNC_WINDOW_DAYS) -> str:
-    """Pulls the last `days` of activities + wellness from Intervals.icu. Returns a one-line summary."""
+    """Pulls the last `days` of activities + wellness from Intervals.icu and health data from
+    Garmin. Returns a one-line summary."""
     with trigger("sync"):  # to_thread copies the context, so the worker threads inherit the tag
         activities_result, wellness_result = await asyncio.gather(
             asyncio.to_thread(sync_activities, days),
@@ -114,6 +116,13 @@ async def run_sync(days: int = SYNC_WINDOW_DAYS) -> str:
     ]
     try:
         with trigger("sync"):
+            garmin = await asyncio.to_thread(sync_garmin, days)
+        parts.append(f"Garmin health: {garmin['inserted']} new, {garmin['updated']} updated")
+    except Exception as e:
+        logger.warning(f"Garmin sync failed: {e}")
+        parts.append("Garmin health: sync failed")
+    try:
+        with trigger("sync"):
             profile = await asyncio.to_thread(sync_profile)
         if profile["changed"]:
             changes = ", ".join(f"{k} {old}->{new}" for k, (old, new) in profile["changed"].items() if k != "eftp_day")
@@ -122,6 +131,12 @@ async def run_sync(days: int = SYNC_WINDOW_DAYS) -> str:
     except Exception as e:
         logger.warning(f"Profile sync failed: {e}")
         parts.append("Profile: sync failed")
+    try:
+        # No new activity for a day: the next session is re-decided instead of waiting to be done.
+        if await asyncio.to_thread(refresh_next_session):
+            parts.append("Next session: re-decided")
+    except Exception as e:
+        logger.warning(f"Next-session refresh failed: {e}")
     return " | ".join(parts)
 
 

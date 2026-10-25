@@ -4,8 +4,11 @@ rules, readiness and the injury check apply) and stored on the activity, so the
 Strava note, the dashboard and the chat all point to the same session.
 
 Only the most recent activity gets one: once something newer is logged, the old
-"next session" is history and nobody should repeat it. A decision older than
-MAX_AGE_HOURS is stale too (the dashboard can decide again on demand).
+"next session" is history and nobody should repeat it. Without a new activity the
+decision doesn't sit there forever: refresh() re-decides it once it is MAX_AGE_HOURS
+old (run after every sync) and every morning before the briefing (with last night's
+sleep/HRV), with the days since the last training in the prompt - so a skipped
+session turns into a fresh plan instead of waiting to be done.
 
 The athlete can change it from a chat, but never silently: when they ask, the coach
 calls propose() (a pending row in next_session_proposals), and the decision is only
@@ -22,26 +25,39 @@ from core.gym import gym_focus
 
 logger = logging.getLogger("AI_COACH_V1.next_session")
 
-MAX_AGE_HOURS = 36
+MAX_AGE_HOURS = 24        # re-decided after this long without a new activity
+MORNING_MIN_AGE_HOURS = 8  # the morning re-check leaves a decision made since last evening alone
+REDECIDE_AFTER_HOURS = 12  # an activity this old gets the "re-decide" prompt
+RECENT_ACTIVITY_HOURS = 36  # a Strava note still gets a next session for an activity this old
 
 DECIDE_PROMPT = (
     'Decide my NEXT training session after my {type} "{name}" on {day} (activity {external_id}). '
-    "Follow all your rules, including readiness and the injury check. Answer in exactly two short lines and "
-    "nothing else:\n"
+    "Follow all your rules, including readiness, `availability` and the injury check. " + "{answer}"
+)
+REDECIDE_PROMPT = (
+    'Re-decide my NEXT training session now. My last training was my {type} "{name}" on {day} '
+    "(activity {external_id}), {ago}. Use today's data: last night's sleep and HRV, readiness, my feedback "
+    "(`athlete_feedback`), `availability` (never plan training on a day I can't train; stay within max_minutes on "
+    "a limited day; a planned entry on the next training day is that day's session), `return_to_training`, and the sessions still to do this week "
+    "(`current_training_block.sessions_remaining`, `days_left_this_week`). If `next_session_decided` is still there, keep it unless something justifies a change. "
+    "Follow all your rules. " + "{answer}"
+)
+ANSWER_FORMAT = (
+    "Answer in exactly two short lines and nothing else:\n"
     "Session: <sport, duration and intensity/targets - watts for rides, HR or feel for runs - or rest>\n"
     "Why: <one short reason>\n"
     "Say 'next session', never 'tomorrow' or a weekday."
 )
 
 
-def _cutoff() -> datetime:
-    return datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS)
+def _cutoff(hours: float = MAX_AGE_HOURS) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(hours=hours)
 
 
 def is_current(a: dict, require_recent: bool = True) -> bool:
     """Is `a` the most recent activity (and, with require_recent, recent enough that
     'next session' still means something)?"""
-    if require_recent and a["start_time"] < _cutoff():
+    if require_recent and a["start_time"] < _cutoff(RECENT_ACTIVITY_HOURS):
         return False
     newer = query("SELECT 1 FROM activities WHERE superseded_by IS NULL AND start_time > %s LIMIT 1;",
                   (a["start_time"],))
@@ -69,8 +85,15 @@ def get_or_decide(a: dict, require_recent: bool = True, redo: bool = False) -> s
         return stored
     from core.chat import ask_supervisor_sync  # lazy: core.chat imports the whole agent graph
 
-    prompt = DECIDE_PROMPT.format(type=a["type"], name=a["name"], day=a["start_time"].date().isoformat(),
-                                  external_id=a["external_id"])
+    age = datetime.now(timezone.utc) - a["start_time"]
+    fields = dict(type=a["type"], name=a["name"], day=a["start_time"].date().isoformat(),
+                  external_id=a["external_id"], answer=ANSWER_FORMAT)
+    if age > timedelta(hours=REDECIDE_AFTER_HOURS):
+        days = age.days
+        ago = f"{days} day{'s' if days != 1 else ''} ago" if days else f"{age.seconds // 3600} hours ago"
+        prompt = REDECIDE_PROMPT.format(ago=ago, **fields)
+    else:
+        prompt = DECIDE_PROMPT.format(**fields)
     if gym := gym_focus(a["type"], a["name"]):
         prompt += f"\nThat gym session: {gym}."
     try:
@@ -96,6 +119,55 @@ def get_or_decide(a: dict, require_recent: bool = True, redo: bool = False) -> s
         conn.close()
     logger.info(f"Next session decided after {a['external_id']}: {text!r}")
     return _stored(a["external_id"]) or text
+
+
+def invalidate():
+    """Marks the current decision stale (availability or check-in changed), so refresh() and
+    the dashboard decide afresh - an athlete-applied choice included, since it predates the change."""
+    a = latest_activity()
+    if not a or not a["next_session"]:
+        return
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE activities SET next_session_at = %s, next_session_source = 'coach' "
+                        "WHERE external_id = %s AND superseded_by IS NULL;",
+                        (_cutoff(MAX_AGE_HOURS + 1), a["external_id"]))
+        conn.commit()
+    finally:
+        conn.close()
+    logger.info(f"Next session after {a['external_id']} marked stale.")
+
+
+def replan() -> str | None:
+    """After the athlete's situation changed (availability, check-in): recompute the week's plan
+    (targets shrink for days off) and decide the next session again. Blocking."""
+    from core.periodization import update_plan  # lazy: only needed here
+    conn = get_connection()
+    try:
+        update_plan(conn)
+    finally:
+        conn.close()
+    invalidate()
+    return refresh()
+
+
+def refresh(morning: bool = False) -> str | None:
+    """Re-decides the next session when it has gone stale without a new activity: none yet,
+    older than MAX_AGE_HOURS, or - with `morning` - made before last night. A choice the
+    athlete applied themselves is kept for a full MAX_AGE_HOURS even in the morning.
+    Returns the new decision, or None when nothing needed (or could get) a new one.
+    Blocking - call via asyncio.to_thread."""
+    a = latest_activity()
+    if not a:
+        return None
+    if a["next_session"] and a["next_session_at"]:
+        age = datetime.now(timezone.utc) - a["next_session_at"]
+        limit = MAX_AGE_HOURS if not morning or a["next_session_source"] == "athlete" else MORNING_MIN_AGE_HOURS
+        if age < timedelta(hours=limit):
+            return None
+    logger.info(f"Next session stale after {a['external_id']} - re-deciding{' (morning)' if morning else ''}.")
+    return get_or_decide(a, require_recent=False, redo=True)
 
 
 def session_line(decision: str) -> str:

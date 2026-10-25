@@ -83,9 +83,13 @@ def set_focus(mode: str) -> dict:
     return get_focus()
 
 
-def adjust_sessions(sessions: dict | None, is_deload: bool, mode: str) -> dict | None:
+# Race and taper weeks (core/periodization.py) keep their own session mix in dual mode too.
+FIXED_PHASES = ("Race", "Taper")
+
+
+def adjust_sessions(sessions: dict | None, is_deload: bool, mode: str, phase: str | None = None) -> dict | None:
     """Dual mode: one more run in build weeks, one endurance ride and one gym session fewer."""
-    if not sessions or mode != "dual":
+    if not sessions or mode != "dual" or phase in FIXED_PHASES:
         return sessions
     s = dict(sessions)
     s["run"] = max(int(s.get("run", 0)), 3 if is_deload else 4)
@@ -94,8 +98,8 @@ def adjust_sessions(sessions: dict | None, is_deload: bool, mode: str) -> dict |
     return s
 
 
-def adjust_focus_text(text: str | None, is_deload: bool, mode: str) -> str | None:
-    if not text or mode != "dual":
+def adjust_focus_text(text: str | None, is_deload: bool, mode: str, phase: str | None = None) -> str | None:
+    if not text or mode != "dual" or phase in FIXED_PHASES:
         return text
     if text.startswith("Base - aerobic foundation"):
         return text + RUN_FOCUS_BASE

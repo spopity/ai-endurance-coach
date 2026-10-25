@@ -4,7 +4,7 @@ dashboard's System page (calls per service, Gemini tokens and estimated cost).
 
 - LLM calls (Gemini, Ollama): a LangChain callback attached by the factories in
   core/llm.py records tokens, duration and an estimated cost per call.
-- HTTP calls made with `requests` (Intervals.icu, Strava, Telegram notifications,
+- HTTP calls made with `requests` (Intervals.icu, Garmin, Strava, Telegram notifications,
   Open-Meteo, Withings): requests.Session.send is wrapped once per process
   (install_http_hook, called from core/db.py). The Telegram bot's own traffic uses
   httpx and isn't counted.
@@ -45,6 +45,7 @@ SERVICES = (  # host suffix -> service name
     ("api.telegram.org", "telegram"),
     ("open-meteo.com", "open_meteo"),
     ("withings.net", "withings"),
+    ("garmin.com", "garmin"),
     ("googleapis.com", "google"),
 )
 
