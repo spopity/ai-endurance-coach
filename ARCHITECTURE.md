@@ -37,7 +37,7 @@ lists **every file in the project** with what it does and how it affects the who
 | Data sync | host crontab, every 30 min: `POST /sync-data` | Pulls the last 5 days of activities and fitness from Intervals.icu and health data from Garmin |
 | Strava notes | `ai-coach-strava-notes.timer`, every 10 min | Writes a coach note into each new activity's Strava description |
 | Intervals.icu health | `ai-coach-intervals-health.timer`, every 15 min | Sends a Telegram alert when the API goes down or recovers |
-| Full sync check | `ai-coach-sync-check.timer`, 03:30 nightly | Finds and imports any records the 5-day sync missed |
+| Full sync check | `ai-coach-sync-check.timer`, 03:30 nightly | Re-imports the last 30 days from Garmin, then finds and imports any Intervals.icu records the 5-day sync missed |
 | Adaptive plan | `ai-coach-plan.timer`, 04:00 nightly | Recomputes `training_blocks` from the training done; Telegram message when this week's phase changes |
 | Strava name sync | `ai-coach-strava-names.timer`, 04:15 nightly | Copies activity names from Strava (last 6 months) to Intervals.icu and the database |
 
@@ -526,7 +526,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `ai-coach-telegram.service` | `telegram_bot.py` (a separate process, so a bot crash never takes down the web UI) |
 | `ai-coach-strava-notes.service` / `.timer` | `post_strava_notes.py` every 10 min |
 | `ai-coach-intervals-health.service` / `.timer` | `check_intervals_api.py --notify` every 15 min |
-| `ai-coach-sync-check.service` / `.timer` | `check_intervals_sync.py --fix --notify` nightly at 03:30 |
+| `ai-coach-sync-check.service` / `.timer` | Nightly at 03:30: `import_garmin.py --days 30` (a failure doesn't stop the next step), then `check_intervals_sync.py --fix --notify` |
 | `ai-coach-strava-names.service` / `.timer` | `sync_strava_names.py --notify` nightly at 04:15 |
 
 ### `web/`: the React dashboard
@@ -590,6 +590,6 @@ venv/bin/python scripts/post_strava_notes.py --dry-run
 venv/bin/python scripts/create_database.py
 # check data completeness against Intervals.icu
 venv/bin/python scripts/check_intervals_sync.py
-# re-import Garmin health data (e.g. after a watch synced late, or a new key)
+# re-import Garmin health data by hand (the nightly job covers the last 30 days)
 venv/bin/python ingest/import_garmin.py --days 30
 ```

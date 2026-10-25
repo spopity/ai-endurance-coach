@@ -345,7 +345,7 @@ cd web && npm run dev     # Vite dev server; proxies /api to localhost:8000
 | `ai-coach-telegram.service` | The Telegram bot |
 | `ai-coach-strava-notes.timer` | Coach notes on new Strava activities, every 10 min |
 | `ai-coach-intervals-health.timer` | Intervals.icu API health check (Telegram alert on outage), every 15 min |
-| `ai-coach-sync-check.timer` | Nightly full reconciliation with Intervals.icu, 03:30 |
+| `ai-coach-sync-check.timer` | Nightly at 03:30: the last 30 days from Garmin, then a full reconciliation with Intervals.icu |
 | `ai-coach-plan.timer` | Nightly adaptive-plan update, 04:00 |
 | `ai-coach-strava-names.timer` | Nightly Strava → Intervals.icu name sync, 04:15 |
 
