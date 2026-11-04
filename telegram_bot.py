@@ -26,7 +26,8 @@ from telegram.ext import (
 
 from core.briefing import build_briefing
 from core.api_log import trigger
-from core.chat import AGENT_DISPLAY_NAMES, SYNC_WINDOW_DAYS, ask_supervisor, new_turn_id, run_sync, turn_proposal
+from core.claude_agent import FALLBACK_NOTE, configured as claude_configured
+from core.chat import AGENT_DISPLAY_NAMES, CLAUDE_AGENT_NODES, SYNC_WINDOW_DAYS, ask_supervisor, new_turn_id, run_sync, turn_proposal
 from core.history import MAX_HISTORY_MESSAGES
 from core.telegram_format import md_to_telegram_html, split_message
 from core.db import load_env
@@ -63,7 +64,10 @@ HELP_TEXT = (
     f"I remember the last {MAX_HISTORY_MESSAGES // 2} exchanges, so follow-ups like \"and tomorrow?\" work. "
     f"The thread resets after {CONVERSATION_IDLE_SECONDS // 3600}h of silence.\n\n"
     "/twin <scenario> - send a what-if straight to the Athlete Twin (projections, climb times, tapers)\n"
-    "/local - toggle Local only: answer with the local model on the home GPU instead of Gemini\n"
+    "Coach, Twin, Racing and History answer with Claude (your subscription) - questions only, it can't change your "
+    "plan or availability. Gemini steps in if Claude fails.\n"
+    "/gemini - answer with Gemini instead (it can save plan changes and availability); /claude switches back\n"
+    "/local - toggle Local only: answer with the local model on the home GPU\n"
     "/strava [YYYY-MM-DD] [context] - (re)write the coach note on a Strava activity (latest activity by default), "
     "previewed before posting\n"
     "/briefing - today's briefing now (it also arrives every morning)\n"
@@ -163,14 +167,17 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, 
     try:
         history = get_history(context.chat_data)
         local_only = bool(context.chat_data.get("local_only"))
+        use_claude = chat_uses_claude(context.chat_data) and not local_only and claude_configured()
         turn_id = new_turn_id()
         with trigger("chat"):
             agent, reply = await ask_supervisor(text, history, agent=forced_agent, local_only=local_only,
-                                                turn_id=turn_id)
+                                                turn_id=turn_id, use_claude=use_claude)
         logger.info(f"Agent '{agent}' replied ({len(reply)} chars, {len(history)} prior messages); sending to Telegram.")
         if reply:
             remember_turn(context.chat_data, text, agent, reply)
-        header = f"*→ {AGENT_DISPLAY_NAMES.get(agent, agent)}*{' · local' if local_only else ''}\n\n"
+        mode = (" · local" if local_only else "" if not use_claude or agent not in CLAUDE_AGENT_NODES
+                else " · gemini (fallback)" if reply.startswith(FALLBACK_NOTE) else " · claude")
+        header = f"*→ {AGENT_DISPLAY_NAMES.get(agent, agent)}*{mode}\n\n"
         await send_markdown(update, header + (reply or "(The agent returned an empty reply.)"))
         proposal = await asyncio.to_thread(turn_proposal, turn_id)
         if proposal:
@@ -211,9 +218,39 @@ async def cmd_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.chat_data["local_only"]:
         await update.effective_message.reply_text(
             "🖥 Local only is ON - every answer comes from the local model on your GPU (free, a bit less thorough). "
-            "Send /local again to allow Gemini.")
+            "Send /local again to switch back.")
     else:
-        await update.effective_message.reply_text("☁️ Local only is OFF - Coach, Twin and Racing use Gemini again.")
+        cloud = "Claude" if chat_uses_claude(context.chat_data) else "Gemini"
+        await update.effective_message.reply_text(f"☁️ Local only is OFF - Coach, Twin, Racing and History use {cloud} again.")
+
+
+def chat_uses_claude(chat_data) -> bool:
+    """Claude is the default cloud model; /gemini (or /claude off) switches this chat to Gemini."""
+    return chat_data.get("use_claude", True)
+
+
+async def set_cloud_model(update: Update, context: ContextTypes.DEFAULT_TYPE, use_claude: bool):
+    context.chat_data["use_claude"] = use_claude
+    context.chat_data["local_only"] = False
+    if use_claude:
+        await update.effective_message.reply_text(
+            "🟠 Claude is answering - Coach, Twin, Racing and History use Claude on your subscription (Gemini steps in "
+            "if it fails). Questions only: it can't change your next session or save availability - send /gemini for that.")
+    else:
+        await update.effective_message.reply_text(
+            "☁️ Gemini is answering - Coach, Twin, Racing and History use Gemini, which can also save plan changes and "
+            "availability. Send /claude to switch back.")
+
+
+async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/claude switches this chat to Claude (the default); /claude off|on sets it. Persisted with chat_data."""
+    arg = (context.args[0].lower() if context.args else "")
+    await set_cloud_model(update, context, arg != "off")
+
+
+async def cmd_gemini(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/gemini switches this chat to Gemini."""
+    await set_cloud_model(update, context, False)
 
 
 # --- Next-session changes agreed in chat: the coach proposes, the athlete applies ---
@@ -522,6 +559,8 @@ async def post_init(application: Application):
         BotCommand("briefing", "Today's briefing now"),
         BotCommand("twin", "Ask the Athlete Twin a what-if directly"),
         BotCommand("local", "Toggle Local only (home GPU instead of Gemini)"),
+        BotCommand("claude", "Answer with Claude (default, read-only)"),
+        BotCommand("gemini", "Answer with Gemini (can save changes)"),
         BotCommand("strava", "(Re)write the coach note on a Strava activity"),
         BotCommand("reset", "Start a fresh conversation"),
         BotCommand("sync", "Pull latest activities + wellness"),
@@ -551,6 +590,8 @@ def main():
     application.add_handler(CommandHandler(["start", "help"], cmd_help, filters=allowed))
     application.add_handler(CommandHandler("twin", cmd_twin, filters=allowed))
     application.add_handler(CommandHandler("local", cmd_local, filters=allowed))
+    application.add_handler(CommandHandler("claude", cmd_claude, filters=allowed))
+    application.add_handler(CommandHandler("gemini", cmd_gemini, filters=allowed))
     application.add_handler(CommandHandler("strava", cmd_strava, filters=allowed))
     application.add_handler(CallbackQueryHandler(on_strava_button, pattern=r"^strava:"))
     application.add_handler(CallbackQueryHandler(on_next_session_button, pattern=r"^nextsession:"))

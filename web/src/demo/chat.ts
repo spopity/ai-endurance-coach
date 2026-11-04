@@ -443,7 +443,7 @@ const wait = (ms: number, signal?: AbortSignal) =>
   });
 
 /** Yields the event stream for one chat turn, timed like the real system. */
-export async function* chatEvents(message: string, forced: string | null, localOnly: boolean, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
+export async function* chatEvents(message: string, forced: string | null, localOnly: boolean, useClaude: boolean, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
   const q = message.toLowerCase().trim();
   const agent = (forced as Agent | null) ?? route(q);
   if (!forced) {
@@ -455,21 +455,22 @@ export async function* chatEvents(message: string, forced: string | null, localO
   const reply = answer(agent, q, localOnly);
   yield { type: "status", content: `Engaging ${NAMES[agent]}...` };
   const cloud = reply.model !== "local" && reply.model !== "none" && !localOnly && agent !== "injury_prevention";
+  const cloudName = useClaude ? "Claude (read-only)" : "cloud model (Gemini)";
   if (reply.model !== "none") {
-    yield { type: "status", content: cloud ? "Engaging cloud model (Gemini)..." : "Engaging local model (Ollama)..." };
+    yield { type: "status", content: cloud ? `Engaging ${cloudName}...` : "Engaging local model (Ollama)..." };
     await wait(cloud ? 1400 : 900, signal);
     if (cloud) {
       for (const tool of reply.tools ?? []) {
         yield { type: "status", content: `Running tool: ${tool}` };
         await wait(500 + Math.random() * 400, signal);
       }
-      yield { type: "status", content: "Engaging cloud model (Gemini)..." };
+      yield { type: "status", content: `Engaging ${cloudName}...` };
     }
     await wait(cloud ? 1600 + Math.random() * 1200 : 1000, signal);
   }
-  const model = reply.model ?? (cloud ? "gemini" : "local");
+  const model = reply.model ?? (cloud ? (useClaude ? "claude" : "gemini") : "local");
   yield { type: "final", agent, model, content: reply.content };
-  if (reply.proposal && !localOnly) {
+  if (reply.proposal && !localOnly && !useClaude) {
     yield { type: "proposal", proposal: createProposal(reply.proposal.session, reply.proposal.why) };
   }
   yield { type: "end" };

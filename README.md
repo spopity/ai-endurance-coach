@@ -76,6 +76,13 @@ specialist:
 A **"Local only"** switch (dashboard and Telegram) answers everything with the local
 model instead, which costs nothing but gives shorter answers.
 
+Optionally, **Claude** answers instead of Gemini, using Claude Code on your own Claude
+subscription: set `CLAUDE_CODE_OAUTH_TOKEN` and it becomes the chat default (dashboard model
+selector, Telegram `/claude` / `/gemini`). In that mode the agents are **read-only**: they can
+look at all your data but can't propose a next-session change or save availability - pick
+Gemini for that. If a Claude call fails, Gemini answers instead and says so; without a token
+everything uses Gemini.
+
 **Intervals.icu is the source of truth for training.** Activities, the fitness/fatigue
 model (CTL/ATL), FTP/LTHR and your race calendar all come from it, so you edit
 thresholds and add races there. A/B races anchor the adaptive plan (race prep, taper,
@@ -95,6 +102,7 @@ respiration, SpO2 and steps come straight from the Garmin Connect Personal API.
 | [Intervals.icu](https://intervals.icu) | **Yes** | All training data, fitness model, race calendar | Free |
 | [Garmin Connect](https://connect.garmin.com) Personal API key | **Yes** for health data | Sleep, HRV, resting HR, stress, Body Battery, SpO2, steps | Free |
 | [Google AI Studio](https://aistudio.google.com/apikey) (Gemini API key) | **Yes** for the cloud agents | Coach, Racing, History, Twin, Strava notes | Pay per use; the System page shows the cost |
+| Claude subscription (`claude setup-token`) | Optional | Read-only chat answers (the default when set), Gemini as fallback | Your subscription; check Anthropic's terms for your plan |
 | [Ollama](https://ollama.com) | **Yes** (routing and Local only) | Supervisor, injury narration, Local-only mode | Free; runs on your own machine |
 | Telegram bot (via [@BotFather](https://t.me/BotFather)) | Optional | Morning briefing and chat on your phone | Free |
 | [Strava API app](https://www.strava.com/settings/api) | Optional | Syncing activity names, coach notes on activities | Free |
@@ -149,6 +157,7 @@ Fill it in:
 | `INTERVALS_API_KEY` | Intervals.icu → Settings → Developer Settings → API key |
 | `GARMIN_PERSONAL_API_KEY` | Garmin Connect (web) → Personal API Key (§4.6) |
 | `GEMINI_API_KEY` | From Google AI Studio |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Optional. Run `venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/claude setup-token` (or `claude setup-token`) and paste the token |
 | `OLLAMA_BASE_URL` | e.g. `http://localhost:11434`, or the address of your GPU machine |
 | `WITHINGS_CLIENT_ID` / `WITHINGS_CLIENT_SECRET` | Optional, from your Withings developer app (§4.3) |
 | `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` | Optional, from your Strava API app (§4.2) |
@@ -287,7 +296,7 @@ Then set `LIFE_AGENT_ENABLED=true`.
    else are ignored.
 3. Run `venv/bin/python telegram_bot.py` (or the systemd unit, §6) and send `/start`.
 
-Commands: `/twin <what-if>`, `/local` (toggle Local only), `/strava [date] [context]`,
+Commands: `/twin <what-if>`, `/claude` / `/gemini` (pick the chat model), `/local` (toggle Local only), `/strava [date] [context]`,
 `/briefing`, `/sync`, `/reset`. The bot uses long polling, so nothing needs to be exposed
 to the internet.
 
@@ -443,8 +452,8 @@ seeded by `db/migrations/001_init_schema.sql`. The first sync replaces them.
   `token.json`, `strava_tokens.json`, `withings_tokens.json`, `logs/` and `state/`
   (the Telegram bot's chat memory). Keep `.env` and the token files `chmod 600`.
 - **Data sent to Google:** cloud agents send your metrics and recent activities to the
-  Gemini API. Use **Local only** mode if you'd rather keep a conversation on your own
-  hardware.
+  Gemini API (or, in Claude mode, to Anthropic). Use **Local only** mode if you'd rather
+  keep a conversation on your own hardware.
 
 ---
 

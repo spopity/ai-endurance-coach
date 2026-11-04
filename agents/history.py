@@ -17,6 +17,7 @@ from langgraph.prebuilt import create_react_agent
 
 from core.history import split_state
 from core.history_query import data_coverage
+from core.claude_agent import claude_or_gemini
 from core.llm import gemini_llm
 from agents.tools import (
     activity_details_tool,
@@ -114,10 +115,17 @@ def call_history(state: AgentState):
         today=today.isoformat(), two_years_ago=today.year - 2, coverage=coverage,
         ftp=metrics_context.get("ftp"), fthr=metrics_context.get("fthr"),
     )
-    agent = create_react_agent(cloud_llm, HISTORY_TOOLS, prompt=system_prompt)
-    result = agent.invoke({"messages": prior + [HumanMessage(content=question)]},
-                          config={"recursion_limit": RECURSION_LIMIT})
-    return {"messages": [AIMessage(content=_extract_text(result["messages"][-1].content))]}
+    def gemini() -> str:
+        agent = create_react_agent(cloud_llm, HISTORY_TOOLS, prompt=system_prompt)
+        result = agent.invoke({"messages": prior + [HumanMessage(content=question)]},
+                              config={"recursion_limit": RECURSION_LIMIT})
+        return _extract_text(result["messages"][-1].content)
+
+    if state.get("use_claude"):
+        text = claude_or_gemini("history_analyst", system_prompt, HISTORY_TOOLS, prior, question, gemini)
+    else:
+        text = gemini()
+    return {"messages": [AIMessage(content=text)]}
 
 
 def call_history_local(state: AgentState):

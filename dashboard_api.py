@@ -287,14 +287,15 @@ class ChatRequest(BaseModel):
     history: list[dict] = []
     agent: str | None = None
     local_only: bool = False
+    use_claude: bool = False
 
 
 @router.post("/chat")
 async def chat(req: ChatRequest):
-    logger.info(f"Dashboard chat: {req.message!r} ({len(req.history)} prior messages, local_only={req.local_only})")
+    logger.info(f"Dashboard chat: {req.message!r} ({len(req.history)} prior messages, local_only={req.local_only}, use_claude={req.use_claude})")
 
     async def events():
-        async for event in stream_reply(req.message, req.history, req.agent, req.local_only):
+        async for event in stream_reply(req.message, req.history, req.agent, req.local_only, req.use_claude):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream",

@@ -1,4 +1,4 @@
-import type { Activity, ChatMessage, SessionProposal, FocusMode, InjuryReport, NextSession, Overview, PlanWeek, PmcPoint, StravaNoteStatus, TrainingFocus, Usage, WeekPoint, WellnessPoint } from "./types";
+import type { Activity, ChatMessage, ChatModel, SessionProposal, FocusMode, InjuryReport, NextSession, Overview, PlanWeek, PmcPoint, StravaNoteStatus, TrainingFocus, Usage, WeekPoint, WellnessPoint } from "./types";
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -44,7 +44,7 @@ export const api = {
 export type ChatEvent =
   | { type: "status"; content: string }
   | { type: "route"; agent: string; content: string }
-  | { type: "final"; agent: string; model?: "local" | "gemini" | "none"; content: string }
+  | { type: "final"; agent: string; model?: "local" | "gemini" | "claude" | "none"; content: string }
   | { type: "proposal"; proposal: SessionProposal }
   | { type: "end" };
 
@@ -53,7 +53,7 @@ export async function streamChat(
   message: string,
   history: ChatMessage[],
   agent: string | null,
-  localOnly: boolean,
+  model: ChatModel,
   onEvent: (e: ChatEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -63,7 +63,8 @@ export async function streamChat(
     body: JSON.stringify({
       message,
       agent,
-      local_only: localOnly,
+      local_only: model === "local",
+      use_claude: model === "claude",
       history: history.filter((m) => !m.error).map(({ role, content, agent }) => ({ role, content, agent })),
     }),
     signal,

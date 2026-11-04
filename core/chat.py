@@ -8,6 +8,7 @@ import uuid
 
 from langchain_core.messages import HumanMessage
 
+from core.claude_agent import configured as claude_configured
 from core.api_log import trigger, trigger_end, trigger_start
 from core.history import to_messages
 from core.next_session import proposal_for_turn, refresh as refresh_next_session
@@ -61,7 +62,7 @@ def turn_proposal(turn_id: str | None) -> dict | None:
 
 
 def _initial_state(message: str, history: list[dict] | None, agent: str | None, local_only: bool,
-                   turn_id: str | None = None) -> dict:
+                   turn_id: str | None = None, use_claude: bool = False) -> dict:
     state = {"messages": to_messages(history or []) + [HumanMessage(content=message)]}
     if turn_id:
         state["turn_id"] = turn_id
@@ -69,12 +70,14 @@ def _initial_state(message: str, history: list[dict] | None, agent: str | None, 
         state["forced_agent"] = agent
     if local_only:
         state["local_only"] = True
+    elif use_claude and claude_configured():  # without a Claude token the chat simply uses Gemini
+        state["use_claude"] = True
     return state
 
 
 async def ask_supervisor(
     message: str, history: list[dict] | None = None, agent: str | None = None, local_only: bool = False,
-    turn_id: str | None = None,
+    turn_id: str | None = None, use_claude: bool = False,
 ) -> tuple[str, str]:
     """Runs one query through the full graph. Returns (agent_node_name, reply_text).
 
@@ -82,18 +85,19 @@ async def ask_supervisor(
     content, agent}) - only the most recent turns are passed on (see core/history.py).
     `agent` pins a specific agent node (e.g. "athlete_twin") and skips LLM routing.
     `local_only` answers with the local model instead of Gemini (agents/local.py).
+    `use_claude` answers Coach/Twin/Racing/History with Claude, read-only (core/claude_agent.py).
     `turn_id` (new_turn_id()) marks a live chat turn - see turn_proposal().
     """
     # Graph nodes are synchronous (blocking Ollama/Gemini/DB calls) - keep them off the event loop.
-    return await asyncio.to_thread(ask_supervisor_sync, message, history, agent, local_only, turn_id)
+    return await asyncio.to_thread(ask_supervisor_sync, message, history, agent, local_only, turn_id, use_claude)
 
 
 def ask_supervisor_sync(
     message: str, history: list[dict] | None = None, agent: str | None = None, local_only: bool = False,
-    turn_id: str | None = None,
+    turn_id: str | None = None, use_claude: bool = False,
 ) -> tuple[str, str]:
     """Blocking ask_supervisor, for code that isn't async (Strava notes timer)."""
-    final_state = agent_platform.invoke(_initial_state(message, history, agent, local_only, turn_id))
+    final_state = agent_platform.invoke(_initial_state(message, history, agent, local_only, turn_id, use_claude))
     agent = final_state.get("next_agent", "unknown")
     messages = final_state.get("messages") or []
     reply = extract_text(messages[-1].content) if messages else ""
@@ -143,17 +147,20 @@ async def run_sync(days: int = SYNC_WINDOW_DAYS) -> str:
 # Every named node except the supervisor produces the final answer - derived, so a new agent
 # can't be forgotten here (its answer would be silently dropped from the dashboard stream).
 FINAL_AGENT_NODES = set(AGENT_DISPLAY_NAMES) - {"supervisor"}
+# The agents that answer with Claude when use_claude is set (the rest stay on the local model).
+CLAUDE_AGENT_NODES = {"ai_coach", "athlete_twin", "racing_strategy", "history_analyst"}
 
 
 async def stream_reply(message: str, history: list[dict] | None = None, agent: str | None = None,
-                       local_only: bool = False):
+                       local_only: bool = False, use_claude: bool = False):
     """Runs one query through the graph, yielding progress events as dicts:
     {"type": "status", "content"}, {"type": "route", "agent", "content"},
-    {"type": "final", "agent", "model", "content"} (model: "local" | "gemini" | "none" for
+    {"type": "final", "agent", "model", "content"} (model: "local" | "gemini" | "claude" | "none" for
     answers computed without an LLM), then {"type": "proposal", "proposal": {id, session, why}} when the
     coach proposed a next-session change for the athlete to approve, and always a closing {"type": "end"}."""
     turn_id = new_turn_id()
-    initial_state = _initial_state(message, history, agent, local_only, turn_id)
+    initial_state = _initial_state(message, history, agent, local_only, turn_id, use_claude)
+    claude = initial_state.get("use_claude", False)
     started = set()
     tag = trigger_start("chat")  # not a `with`: this generator yields between set and reset
     models = []  # chat models used after routing, to label the answer
@@ -164,6 +171,8 @@ async def stream_reply(message: str, history: list[dict] | None = None, agent: s
             if kind == "on_chain_start" and name in AGENT_DISPLAY_NAMES and name not in started:
                 started.add(name)
                 yield {"type": "status", "content": f"Engaging {AGENT_DISPLAY_NAMES[name]}..."}
+                if claude and name in CLAUDE_AGENT_NODES:
+                    yield {"type": "status", "content": "Engaging Claude (read-only)..."}
 
             elif kind == "on_chat_model_start":
                 if "ChatOllama" in name:
@@ -188,7 +197,8 @@ async def stream_reply(message: str, history: list[dict] | None = None, agent: s
                 if output.get("messages"):
                     text = extract_text(output["messages"][-1].content)
                     logger.info(f"Final reply from '{name}' ({len(text)} chars).")
-                    model = "gemini" if "gemini" in models else "local" if models else "none"
+                    model = ("gemini" if "gemini" in models else "local" if models
+                             else "claude" if claude and name in CLAUDE_AGENT_NODES else "none")
                     yield {"type": "final", "agent": name, "model": model, "content": text}
                     break
         proposal = await asyncio.to_thread(turn_proposal, turn_id)

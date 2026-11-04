@@ -76,6 +76,9 @@ export interface PmcPoint {
   load: number;
 }
 
+/** The model the chat answers with (Coach, Twin, Racing, History). */
+export type ChatModel = "gemini" | "claude" | "local";
+
 export interface WellnessPoint {
   day: string;
   hrv: number | null;
@@ -132,8 +135,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   agent?: string;
-  /** Which model wrote the answer: local (Ollama), gemini, or none (computed without an LLM). */
-  model?: "local" | "gemini" | "none";
+  /** Which model wrote the answer: local (Ollama), gemini, claude, or none (computed without an LLM). */
+  model?: "local" | "gemini" | "claude" | "none";
   error?: boolean;
   /** A next-session change the coach proposed in this answer, waiting for the athlete's Apply/Discard. */
   proposal?: SessionProposal;

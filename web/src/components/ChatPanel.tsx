@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, Check, Cloud, Cpu, Loader2, MessageSquarePlus, SendHorizontal, Sparkles, Square, User, X } from "lucide-react";
+import { Asterisk, Bot, Check, Cloud, Cpu, Loader2, MessageSquarePlus, SendHorizontal, Sparkles, Square, User, X } from "lucide-react";
 import { api, streamChat } from "../api";
-import type { ChatMessage, SessionProposal } from "../types";
+import type { ChatMessage, ChatModel, SessionProposal } from "../types";
 import { AGENT_META } from "../lib/colors";
 
 const STORAGE_KEY = "ai-coach-chat-v1";
-const LOCAL_ONLY_KEY = "ai-coach-local-only";
+// v2: Claude became the default, so an earlier saved choice (always "gemini" then) is not carried over.
+const MODEL_KEY = "ai-coach-model-v2";
 // Matches the server's history window (core/history.py) - older turns are kept for display only.
 const HISTORY_SENT = 6;
 
@@ -29,13 +30,21 @@ const SUGGESTIONS = [
 const MODEL_BADGE = {
   local: { label: "Local", icon: Cpu, className: "bg-emerald-500/10 text-emerald-300" },
   gemini: { label: "Gemini", icon: Cloud, className: "bg-sky-500/10 text-sky-300" },
+  claude: { label: "Claude", icon: Asterisk, className: "bg-orange-500/10 text-orange-300" },
 } as const;
 
-function loadLocalOnly(): boolean {
+const MODEL_OPTIONS: { value: ChatModel; label: string; title: string }[] = [
+  { value: "claude", label: "Claude", title: "Coach, Twin, Racing and History use Claude on your subscription - questions only, it can't change your plan or availability. Gemini steps in if Claude fails." },
+  { value: "gemini", label: "Gemini", title: "Coach, Twin, Racing and History use Gemini, which can also save plan changes and availability." },
+  { value: "local", label: "Local", title: "Answers come from the local model on your GPU - free, but less thorough." },
+];
+
+function loadModel(): ChatModel {
   try {
-    return localStorage.getItem(LOCAL_ONLY_KEY) === "1";
+    const saved = localStorage.getItem(MODEL_KEY);
+    return saved === "gemini" || saved === "claude" || saved === "local" ? saved : "claude";
   } catch {
-    return false;
+    return "claude";
   }
 }
 
@@ -63,7 +72,7 @@ export function ChatPanel({
   const [messages, setMessages] = useState<ChatMessage[]>(load);
   const [input, setInput] = useState("");
   const [agent, setAgent] = useState("");
-  const [localOnly, setLocalOnly] = useState(loadLocalOnly);
+  const [model, setModel] = useState<ChatModel>(loadModel);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
@@ -80,11 +89,11 @@ export function ChatPanel({
 
   useEffect(() => {
     try {
-      localStorage.setItem(LOCAL_ONLY_KEY, localOnly ? "1" : "0");
+      localStorage.setItem(MODEL_KEY, model);
     } catch {
       /* storage unavailable - setting lasts for this session */
     }
-  }, [localOnly]);
+  }, [model]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -110,7 +119,7 @@ export function ChatPanel({
     abortRef.current = controller;
     let answered = false;
     try {
-      await streamChat(question, history, agent || null, localOnly, (e) => {
+      await streamChat(question, history, agent || null, model, (e) => {
         if (e.type === "status" || e.type === "route") {
           setStatus((s) => (s[s.length - 1] === e.content ? s : [...s.slice(-3), e.content]));
         } else if (e.type === "final") {
@@ -239,21 +248,14 @@ export function ChatPanel({
               {AGENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </label>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={localOnly}
-            onClick={() => setLocalOnly((v) => !v)}
-            title={localOnly
-              ? "Answers come from the local model on your GPU - free, but less thorough. Click to allow Gemini."
-              : "Coach, Twin and Racing use Gemini. Click to answer everything with the local model."}
-            className="flex items-center gap-1.5"
-          >
-            <span className={`relative h-4 w-7 rounded-full transition ${localOnly ? "bg-emerald-500/70" : "bg-white/10"}`}>
-              <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-all ${localOnly ? "left-3.5" : "left-0.5"}`} />
-            </span>
-            <span className={localOnly ? "font-medium text-emerald-300" : ""}>Local only</span>
-          </button>
+          <label className="flex items-center gap-2" title={MODEL_OPTIONS.find((o) => o.value === model)?.title}>
+            Model
+            <select value={model} onChange={(e) => setModel(e.target.value as ChatModel)}
+              className="rounded-md border border-white/10 bg-ink-800 px-1.5 py-0.5 text-[11px] text-slate-200 outline-none focus:border-sky-500/50">
+              {MODEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+          {model === "claude" && <span className="text-orange-300/80">read-only</span>}
         </div>
         <div className="flex items-end gap-2 rounded-2xl border border-white/10 bg-ink-800/80 p-2 focus-within:border-sky-500/40">
           <textarea
@@ -320,7 +322,7 @@ function ProposalCard({ proposal: p, onResolve }: { proposal: SessionProposal; o
   );
 }
 
-function ModelBadge({ model }: { model: "local" | "gemini" }) {
+function ModelBadge({ model }: { model: keyof typeof MODEL_BADGE }) {
   const { label, icon: Icon, className } = MODEL_BADGE[model];
   return (
     <span className={`inline-flex items-center gap-1 rounded px-1.5 py-px text-[10px] font-medium ${className}`}>

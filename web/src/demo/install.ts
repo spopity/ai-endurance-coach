@@ -18,7 +18,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
 
   if (url.pathname.endsWith("/api/chat")) {
     const encoder = new TextEncoder();
-    const events = chatEvents(String(body.message ?? ""), body.agent ?? null, Boolean(body.local_only), init?.signal ?? undefined);
+    const events = chatEvents(String(body.message ?? ""), body.agent ?? null, Boolean(body.local_only), Boolean(body.use_claude), init?.signal ?? undefined);
     const stream = new ReadableStream<Uint8Array>({
       async pull(controller) {
         try {

@@ -3,6 +3,7 @@ from typing import List, TypedDict
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.prebuilt import create_react_agent
 
+from core.claude_agent import claude_or_gemini
 from core.llm import gemini_llm
 from core.focus import get_focus
 from core.injury_checks import SLEEP_MIN_HOURS
@@ -113,23 +114,30 @@ def call_ai_coach(state: AgentState):
     ftp = metrics_context.get("ftp") or 250
     fthr = metrics_context.get("fthr") or 165
 
+    # A live chat turn lets the coach propose a change and record availability - never in Claude's read-only mode.
+    live = bool(state.get("turn_id")) and not state.get("use_claude")
     focus = get_focus()
     metrics_str = json.dumps(metrics_context, indent=2, default=str)
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         ftp=ftp, fthr=fthr, athlete_weight=athlete_weight, metrics_context=metrics_str,
         primary_goal=focus["primary_goal"], secondary_goal=focus["secondary_goal"], running_rule=focus["running_rule"],
         sleep_min_hours=SLEEP_MIN_HOURS,
-        change_rule=CHANGE_RULE_CHAT if state.get("turn_id") else CHANGE_RULE_NO_CHAT,
-        availability_rule=AVAILABILITY_RULE_CHAT if state.get("turn_id") else AVAILABILITY_RULE_NO_CHAT,
+        change_rule=CHANGE_RULE_CHAT if live else CHANGE_RULE_NO_CHAT,
+        availability_rule=AVAILABILITY_RULE_CHAT if live else AVAILABILITY_RULE_NO_CHAT,
     )
 
     injury_tool = build_injury_check_tool(metrics_context)
     tools = [historical_tool, historical_wellness_tool, injury_tool, activity_details_tool]
-    if state.get("turn_id"):  # a live chat turn: the athlete can approve a change and state availability
+    if live:  # the athlete can approve a change and state availability
         tools.append(build_propose_session_tool(state["turn_id"]))
         tools += build_availability_tools()
-    agent = create_react_agent(cloud_llm, tools, prompt=system_prompt)
-    result = agent.invoke({"messages": prior + [HumanMessage(content=question)]})
+    def gemini() -> str:
+        agent = create_react_agent(cloud_llm, tools, prompt=system_prompt)
+        result = agent.invoke({"messages": prior + [HumanMessage(content=question)]})
+        return _extract_text(result["messages"][-1].content)
 
-    clean_text = _extract_text(result["messages"][-1].content)
-    return {"messages": [AIMessage(content=clean_text)]}
+    if state.get("use_claude"):
+        text = claude_or_gemini("ai_coach", system_prompt, tools, prior, question, gemini)
+    else:
+        text = gemini()
+    return {"messages": [AIMessage(content=text)]}

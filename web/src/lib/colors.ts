@@ -47,6 +47,7 @@ export const AGENT_META: Record<string, { label: string; color: string }> = {
 /** External services on the System page (core/api_log.py names). */
 export const SERVICE_META: Record<string, { label: string; color: string }> = {
   gemini: { label: "Gemini", color: "#a78bfa" },
+  claude: { label: "Claude", color: "#fb923c" },
   ollama: { label: "Ollama (local)", color: "#34d399" },
   intervals: { label: "Intervals.icu", color: "#38bdf8" },
   strava: { label: "Strava", color: "#fb923c" },

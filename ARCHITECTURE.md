@@ -56,6 +56,10 @@ lists **every file in the project** with what it does and how it affects the who
   Racing Strategy and Strava-note text.
 - **Ollama** (`qwen3:8b` on a GTX 1070 in another LXC): the local model for routing,
   injury narration and "Local only" mode.
+- **Claude** (Claude Code via the Claude Agent SDK on the athlete's subscription,
+  `CLAUDE_CODE_OAUTH_TOKEN`): the default for the Coach, Twin, Racing and History chat answers.
+  Read-only (`core/claude_agent.py`). Gemini can be picked per chat, steps in when a Claude call
+  fails, and is used whenever no Claude token is set.
 - **Strava**: activity names (read) and coach notes in descriptions (write).
 - **Withings**: body weight.
 - **Open-Meteo**: race-day weather (free, no key).
@@ -164,7 +168,14 @@ Every chat message goes through a LangGraph pipeline:
    A front-end can skip the supervisor by forcing an agent (Telegram `/twin`; the
    next-session decision forces `ai_coach`).
 3. **The agent** answers. With `local_only` set, the Coach, Twin and Racing nodes
-   switch to their local versions in `agents/local.py`.
+   switch to their local versions in `agents/local.py`. With `use_claude` set (the chat default
+   when a Claude token exists), the Coach,
+   Twin, Racing and History nodes keep their prompts but answer through
+   `core/claude_agent.py`: Claude Code with only the read-only tools (no proposals, no
+   availability), every built-in tool off, no settings or CLAUDE.md loaded, an empty
+   working directory and its own config dir (`state/claude`). If the Claude call fails, the
+   agent's own Gemini call answers with the same read-only prompt and tools, prefixed with a
+   one-line note (`claude_or_gemini`).
 
 ### 4.2 The AI Coach's rules (`agents/ai_coach.py`)
 
@@ -361,7 +372,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 - **Telegram:**
   - **Morning briefing** at `BRIEFING_TIME`: syncs first, re-checks the next session
     with last night's sleep/HRV, then computed facts plus that shared decision.
-  - **Chat** (with 3 h conversation memory), `/twin`, `/local`, `/strava`, `/briefing`,
+  - **Chat** (with 3 h conversation memory), `/twin`, `/claude`, `/gemini`, `/local`, `/strava`, `/briefing`,
     `/sync`, `/reset`.
   - **Feedback** (§4.11): RPE and legs after each new session (checked every 10 min,
     not between 22:00 and 07:00), and a check-in (body, motivation) after the briefing.
@@ -417,7 +428,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router | The main web process and the target of the 30-min sync cron |
 | `dashboard_api.py` | The `/api/*` JSON endpoints: overview, PMC, wellness, weekly load, plan, focus get/set, next session, activities, Strava-note preview/post, injury report, races, usage (System page), chat, sync | Everything the dashboard shows or does goes through here |
 | `graph.py` | The LangGraph workflow: preprocessor (metrics + readiness + next session), local-model supervisor router, agent nodes, local/cloud switch | The brain: decides which agent answers and what context it gets |
-| `telegram_bot.py` | The Telegram bot: access control, chat with memory, `/twin`, `/local`, `/strava` preview/post buttons, `/briefing`, `/sync`, `/reset`, the daily briefing job, session-feedback and check-in buttons | The mobile front-end, the daily push message and the athlete's feedback |
+| `telegram_bot.py` | The Telegram bot: access control, chat with memory, `/twin`, `/claude`/`/gemini`/`/local` model choice, `/strava` preview/post buttons, `/briefing`, `/sync`, `/reset`, the daily briefing job, session-feedback and check-in buttons | The mobile front-end, the daily push message and the athlete's feedback |
 | `logging_config.py` | Logging setup: daily-rotated files in `logs/` (14 days) plus stdout, quiets noisy libraries | Consistent logs for every process |
 
 ### `agents/`: the specialists
@@ -459,6 +470,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `races.py` | Races from the Intervals.icu calendar (`fetch_races` for any range, `fetch_upcoming_races`; with description parsing) and past races from history | Race lists for the agents, briefing, dashboard and the race-anchored plan |
 | `weather.py` | Open-Meteo geocoding, forecast and 5-year climatology | Race-day conditions for pacing and fuelling |
 | `llm.py` | LLM factories: `local_llm` (Ollama `qwen3:8b`, thinking off, 8k context, 30 min keep-alive) and `gemini_llm` (`gemini-pro-latest`), each tagged with the component using it | One local model for everything (the GPU never reloads); every LLM call is logged |
+| `claude_agent.py` | `claude_or_gemini` / `ask_claude`: answers one agent's question with Claude Code (Claude Agent SDK) on the subscription - the agent's own prompt, only the read-only tools as an in-process MCP server, no built-in tools, settings or CLAUDE.md; logged to `api_calls` as `claude` (cost 0) | The default, read-only chat model, with Gemini as fallback |
 | `api_log.py` | Records every outgoing call into `api_calls`: LangChain usage callback (tokens, cost estimate, price table), `requests` hook for HTTP services, `trigger()` reason tags | Source data for the System page and Gemini cost tracking |
 | `usage.py` | Aggregates `api_calls` for `/api/usage`: totals, timeline, cost projection, components, flows, busy hours, recent calls | Feeds the dashboard's System page |
 | `chat.py` | Shared front-end helpers: `ask_supervisor` (async/sync), SSE `stream_reply`, `run_sync`, agent display names | The web UI, Telegram and timers talk to the graph the same way |

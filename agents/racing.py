@@ -14,6 +14,7 @@ from typing import List, TypedDict
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.prebuilt import create_react_agent
 
+from core.claude_agent import claude_or_gemini
 from core.llm import gemini_llm
 from core.history import split_state
 from agents.tools import (
@@ -94,6 +95,13 @@ def call_racing(state: AgentState):
     metrics_str = json.dumps(state.get("metrics_context", {}), indent=2, default=str)
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(today=date.today().isoformat(), metrics_context=metrics_str)
 
-    agent = create_react_agent(cloud_llm, RACING_TOOLS, prompt=system_prompt)
-    result = agent.invoke({"messages": prior + [HumanMessage(content=question)]})
-    return {"messages": [AIMessage(content=_extract_text(result["messages"][-1].content))]}
+    def gemini() -> str:
+        agent = create_react_agent(cloud_llm, RACING_TOOLS, prompt=system_prompt)
+        result = agent.invoke({"messages": prior + [HumanMessage(content=question)]})
+        return _extract_text(result["messages"][-1].content)
+
+    if state.get("use_claude"):
+        text = claude_or_gemini("racing_strategy", system_prompt, RACING_TOOLS, prior, question, gemini)
+    else:
+        text = gemini()
+    return {"messages": [AIMessage(content=text)]}

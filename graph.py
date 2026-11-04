@@ -42,6 +42,8 @@ class AgentState(TypedDict):
     forced_agent: str
     # Optional: answer with the local model only (agents/local.py) instead of Gemini.
     local_only: bool
+    # Optional: Coach, Twin, Racing and History answer with Claude (core/claude_agent.py, read-only) instead of Gemini.
+    use_claude: bool
     # Optional: set by a live chat turn (Telegram, dashboard) - lets the coach PROPOSE a change to the
     # saved next session, which the athlete must approve (core/next_session.py). Unset for the
     # briefing and the automatic decisions, so those can never change it.
