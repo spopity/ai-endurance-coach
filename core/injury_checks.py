@@ -40,6 +40,7 @@ POOR_FEEL = 4
 LOOKBACK_DAYS = 150
 RECENT_DAYS = 14
 TREND_RECENT_DAYS = 21
+WEEKLY_RUN_MIN_INCREASE_KM = 8
 
 
 def _finding(severity, area, title, detail):
@@ -474,19 +475,45 @@ def check_running(data, today, findings, checked, gaps):
     if this_week == 0:
         return
     checked.append("running volume progression")
+    check_run_spikes(runs, today, findings)
+    # Weekly % change is a weak injury predictor (Frandsen et al., BJSM 2025) and inflates at low
+    # volumes, so it only cautions, and only when the absolute increase is meaningful too.
     if prior_avg >= 5:
         change = (this_week / prior_avg - 1) * 100
-        if change > 50:
-            findings.append(_finding("high", "Running", f"Run volume +{change:.0f}% ({this_week:.0f} km vs {prior_avg:.0f} km/wk)",
-                "Running loads bone and tendon far more than cycling and they adapt slowly - jumps above ~30% are a "
-                "common route to shin splints, Achilles and stress injuries."))
-        elif change > 30:
+        if change > 30 and this_week - prior_avg >= WEEKLY_RUN_MIN_INCREASE_KM:
             findings.append(_finding("caution", "Running", f"Run volume +{change:.0f}% ({this_week:.0f} km vs {prior_avg:.0f} km/wk)",
                 "Faster increase than tendons usually tolerate; hold this level for a week before adding more."))
     elif this_week > 15:
         findings.append(_finding("caution", "Running", f"{this_week:.0f} km run this week from a low base",
             f"Your previous 4 weeks averaged {prior_avg:.0f} km - cardio fitness from cycling outpaces "
             "running-specific tissue tolerance. Build run volume gradually."))
+
+
+def check_run_spikes(runs, today, findings):
+    """Flags single runs much longer than the longest run of the 30 days before them - the spike
+    pattern linked to overuse injury in Frandsen et al., BJSM 2025 (weekly change was not)."""
+    spikes = []
+    for a in runs:
+        if a["day"] <= today - timedelta(days=7):
+            continue
+        before = [float(r["distance_m"]) for r in runs if a["day"] - timedelta(days=30) <= r["day"] < a["day"]]
+        if not before:
+            continue
+        longest = max(before) / 1000
+        dist = float(a["distance_m"]) / 1000
+        if longest >= 1:
+            spikes.append(((dist / longest - 1) * 100, dist, longest, a))
+    if not spikes:
+        return
+    change, dist, longest, a = max(spikes, key=lambda s: s[0])
+    title = f"Longest run +{change:.0f}% ({dist:.1f} km vs {longest:.1f} km in prior 30 days)"
+    if change > 100:
+        findings.append(_finding("high", "Running", title,
+            f"{_label(a)}: more than double your recent longest run. Single-run spikes like this are the "
+            "strongest volume predictor of shin, Achilles and stress injuries - pace doesn't offset it."))
+    elif change > 30:
+        findings.append(_finding("caution", "Running", title,
+            f"{_label(a)}: a big jump over your recent longest run. Grow the long run by ~10% at a time."))
 
 
 # --- public API ---
