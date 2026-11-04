@@ -83,6 +83,7 @@ export interface WellnessPoint {
   sleep_h: number | null;
   sleep_score: number | null;
   weight_kg: number | null;
+  spo2: number | null; // overnight (sleep) average, %
 }
 
 export interface WeekPoint {

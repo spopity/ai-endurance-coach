@@ -550,7 +550,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `src/components/KpiRow.tsx` | Top tiles: fitness, fatigue, form, FTP (with eFTP drift), 7-day HRV, this week's load | At-a-glance status |
 | `src/components/NextSessionCard.tsx` | The shared next-session decision with its reason; "decide again" button | Shows the coach's one decision |
 | `src/components/PmcChart.tsx` | CTL/ATL/TSB chart with a range toggle | Fitness trend |
-| `src/components/WellnessChart.tsx` | HRV, resting HR and sleep chart against the baseline | Recovery trend |
+| `src/components/WellnessChart.tsx` | HRV, resting HR, sleep and overnight SpO2 chart against the baseline | Recovery trend |
 | `src/components/WeeklyChart.tsx` | Weekly load by sport against the plan target | Load versus plan |
 | `src/components/PlanCard.tsx` | Upcoming weeks: phase, load range, planned vs done sessions, cycling/dual focus toggle | The training plan view and focus switch |
 | `src/components/InjuryCard.tsx` | Injury findings by severity, expandable, "ask about this" | Risk visibility |

@@ -153,6 +153,7 @@ export interface Day {
   sleep_h: number | null;
   sleep_score: number | null;
   weight_kg: number | null;
+  spo2: number | null;
 }
 export interface Week {
   monday: string;
@@ -240,6 +241,8 @@ function generate() {
         sleep_h: round(7.3 + noise(0.55) + (d >= 5 ? 0.4 : 0), 1),
         sleep_score: Math.min(98, round(79 + noise(7))),
         weight_kg: rand() < 0.4 ? round(weight, 1) : null,
+        // No rand() here: an extra draw would shift every value generated after it.
+        spo2: round(95 + Math.sin(days.length * 2.3) * 1.2 - Math.min(1, strain * 0.03)),
       });
     }
     const done = targetMin !== null ? weekLoad / targetMin : 0;
@@ -268,7 +271,7 @@ function generate() {
   days.push({
     day: iso(TODAY), load: 0,
     ctl: round(last.ctl * CTL_DECAY, 1), atl: round(last.atl * ATL_DECAY, 1),
-    hrv: 55, resting_hr: 50, sleep_h: 6.9, sleep_score: 71, weight_kg: round(weight, 1),
+    hrv: 55, resting_hr: 50, sleep_h: 6.9, sleep_score: 71, weight_kg: round(weight, 1), spo2: 94,
   });
   activities.reverse();
   activities.forEach((a, i) => {

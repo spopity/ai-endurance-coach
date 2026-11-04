@@ -274,7 +274,7 @@ export async function handle(method: string, url: URL, body: Record<string, unkn
   if (method === "GET") {
     if (path === "/api/overview") return overview();
     if (path === "/api/pmc") return DATA.days.slice(-num("days", 90)).map((d) => ({ day: d.day, ctl: d.ctl, atl: d.atl, tsb: Math.round((d.ctl - d.atl) * 10) / 10, load: d.load }));
-    if (path === "/api/wellness") return DATA.days.slice(-num("days", 90)).map(({ day, hrv, resting_hr, sleep_h, sleep_score, weight_kg }) => ({ day, hrv, resting_hr, sleep_h, sleep_score, weight_kg }));
+    if (path === "/api/wellness") return DATA.days.slice(-num("days", 90)).map(({ day, hrv, resting_hr, sleep_h, sleep_score, weight_kg, spo2 }) => ({ day, hrv, resting_hr, sleep_h, sleep_score, weight_kg, spo2 }));
     if (path === "/api/weekly") return weekly(num("weeks", 12));
     if (path === "/api/plan") return plan(num("weeks", 8));
     if (path === "/api/next-session") return nextSession();

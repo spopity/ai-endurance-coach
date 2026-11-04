@@ -64,12 +64,13 @@ def pmc(days: int = 180):
 def wellness(days: int = 90):
     days = max(7, min(days, 3650))
     rows = _query("""
-        SELECT day, hrv, resting_hr, sleep_duration_sec, sleep_score, weight_kg FROM daily_metrics
+        SELECT day, hrv, resting_hr, sleep_duration_sec, sleep_score, weight_kg, spo2_sleep_avg FROM daily_metrics
         WHERE day >= %s ORDER BY day;
     """, (date.today() - timedelta(days=days),))
     return [{"day": r["day"].isoformat(), "hrv": _f(r["hrv"]), "resting_hr": _f(r["resting_hr"], 0),
              "sleep_h": _f(float(r["sleep_duration_sec"]) / 3600) if r["sleep_duration_sec"] else None,
-             "sleep_score": _f(r["sleep_score"], 0), "weight_kg": _f(r["weight_kg"])} for r in rows]
+             "sleep_score": _f(r["sleep_score"], 0), "weight_kg": _f(r["weight_kg"]),
+             "spo2": _f(r["spo2_sleep_avg"], 0)} for r in rows]
 
 
 @router.get("/weekly")

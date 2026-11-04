@@ -8,16 +8,18 @@ import { fmt } from "../lib/format";
 import { Card, Segmented, Skeleton } from "./Card";
 import { Chart } from "./Chart";
 
-type Metric = "hrv" | "resting_hr" | "sleep_h";
+type Metric = "hrv" | "resting_hr" | "sleep_h" | "spo2";
 const METRICS: { label: string; value: Metric }[] = [
   { label: "HRV", value: "hrv" },
   { label: "Resting HR", value: "resting_hr" },
   { label: "Sleep", value: "sleep_h" },
+  { label: "SpO2", value: "spo2" },
 ];
 const META: Record<Metric, { name: string; unit: string; color: string }> = {
   hrv: { name: "HRV", unit: "ms", color: C.hrv },
   resting_hr: { name: "Resting HR", unit: "bpm", color: C.rhr },
   sleep_h: { name: "Sleep", unit: "h", color: C.sleep },
+  spo2: { name: "SpO2", unit: "%", color: C.spo2 },
 };
 
 function rolling(values: (number | null)[], window = 7): (number | null)[] {
@@ -98,7 +100,7 @@ export function WellnessChart({ hrv, refreshKey, compact = false }: { hrv: Overv
       ) : coverage < 5 ? (
         <div className="flex h-[230px] items-center justify-center text-center text-sm text-slate-500">
           Not enough {meta.name.toLowerCase()} data in the last 90 days
-          <br />({coverage} readings) - wear the watch overnight to track this.
+          <br />({coverage} readings) - wear the watch overnight{metric === "spo2" ? " with Pulse Ox on" : ""} to track this.
         </div>
       ) : (
         <>
@@ -106,6 +108,11 @@ export function WellnessChart({ hrv, refreshKey, compact = false }: { hrv: Overv
           {metric === "hrv" && hrv && (
             <p className="mt-1 text-[11px] text-slate-500">
               Green band = your normal range ({fmt(hrv.baseline - hrv.sd / 2, 0)}–{fmt(hrv.baseline + hrv.sd / 2, 0)} ms, 60-day baseline ±0.5 SD)
+            </p>
+          )}
+          {metric === "spo2" && (
+            <p className="mt-1 text-[11px] text-slate-500">
+              Overnight average from the watch. Watch the trend, not single nights - a drop of 2-3 points below your norm can mean illness or altitude.
             </p>
           )}
         </>

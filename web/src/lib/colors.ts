@@ -6,6 +6,7 @@ export const C = {
   hrv: "#a78bfa",
   rhr: "#fb7185",
   sleep: "#2dd4bf",
+  spo2: "#60a5fa",
   grid: "rgba(148,163,184,0.10)",
   axis: "#64748b",
   text: "#cbd5e1",
