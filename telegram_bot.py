@@ -49,6 +49,10 @@ PERSISTENCE_PATH = os.path.join(STATE_DIR, "telegram_bot.pickle")
 # a question this evening shouldn't be interpreted against this morning's thread.
 CONVERSATION_IDLE_SECONDS = 3 * 60 * 60
 
+# Set in main() from TELEGRAM_ALLOWED_USER_IDS. Not kept in bot_data: PicklePersistence replaces
+# bot_data with its saved copy on startup, which silently dropped it and refused every button press.
+ALLOWED_IDS: set[int] = set()
+
 # Scheduled messages (times are local to the athlete, not the UTC server).
 LOCAL_TZ = ZoneInfo("Europe/Bratislava")
 DEFAULT_BRIEFING_TIME = "07:00"
@@ -226,10 +230,18 @@ def proposal_buttons(pid: int) -> InlineKeyboardMarkup:
     ]])
 
 
+async def button_allowed(update: Update) -> bool:
+    """Button presses bypass the message filters, so each button handler checks the user itself."""
+    if update.effective_user.id in ALLOWED_IDS:
+        return True
+    logger.warning(f"Ignored a button press from user {update.effective_user.id} (not allowed).")
+    await update.callback_query.answer("Not allowed.")
+    return False
+
+
 async def on_next_session_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if update.effective_user.id not in context.bot_data.get("allowed_ids", []):
-        await query.answer("Not allowed.")
+    if not await button_allowed(update):
         return
     _, action, pid = query.data.split(":", 2)
     try:
@@ -304,8 +316,7 @@ async def cmd_strava(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_strava_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if update.effective_user.id not in context.bot_data.get("allowed_ids", []):
-        await query.answer("Not allowed.")
+    if not await button_allowed(update):
         return
     _, action, key = query.data.split(":", 2)
     preview = context.chat_data.get("strava_previews", {}).get(key)
@@ -446,8 +457,7 @@ async def replan_and_send(bot, chat_id: int, reason: str):
 
 async def on_feedback_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if update.effective_user.id not in context.bot_data.get("allowed_ids", []):
-        await query.answer("Not allowed.")
+    if not await button_allowed(update):
         return
     _, step, key, value = query.data.split(":", 3)
     chat_id = query.message.chat_id
@@ -536,7 +546,7 @@ def main():
     os.makedirs(STATE_DIR, exist_ok=True)
     persistence = PicklePersistence(filepath=PERSISTENCE_PATH)
     application = Application.builder().token(token).persistence(persistence).post_init(post_init).build()
-    application.bot_data["allowed_ids"] = allowed_ids
+    ALLOWED_IDS.update(allowed_ids)
 
     application.add_handler(CommandHandler(["start", "help"], cmd_help, filters=allowed))
     application.add_handler(CommandHandler("twin", cmd_twin, filters=allowed))
