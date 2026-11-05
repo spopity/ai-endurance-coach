@@ -455,7 +455,7 @@ export async function* chatEvents(message: string, forced: string | null, localO
   const reply = answer(agent, q, localOnly);
   yield { type: "status", content: `Engaging ${NAMES[agent]}...` };
   const cloud = reply.model !== "local" && reply.model !== "none" && !localOnly && agent !== "injury_prevention";
-  const cloudName = useClaude ? "Claude (read-only)" : "cloud model (Gemini)";
+  const cloudName = useClaude ? "Claude" : "cloud model (Gemini)";
   if (reply.model !== "none") {
     yield { type: "status", content: cloud ? `Engaging ${cloudName}...` : "Engaging local model (Ollama)..." };
     await wait(cloud ? 1400 : 900, signal);

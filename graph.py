@@ -10,6 +10,7 @@ from core.db import load_env
 from core.llm import local_llm
 from core.metrics import load_athlete_metrics
 from core.next_session import latest_decision
+from core.push import status as push_status
 from core.readiness import readiness_context
 from core.history import split_state, format_for_supervisor
 from agents.ai_coach import call_ai_coach
@@ -42,7 +43,7 @@ class AgentState(TypedDict):
     forced_agent: str
     # Optional: answer with the local model only (agents/local.py) instead of Gemini.
     local_only: bool
-    # Optional: Coach, Twin, Racing and History answer with Claude (core/claude_agent.py, read-only) instead of Gemini.
+    # Optional: Coach, Twin, Racing and History answer with Claude (core/claude_agent.py) instead of Gemini.
     use_claude: bool
     # Optional: set by a live chat turn (Telegram, dashboard) - lets the coach PROPOSE a change to the
     # saved next session, which the athlete must approve (core/next_session.py). Unset for the
@@ -55,7 +56,8 @@ def global_preprocessor(state: AgentState):
     metrics = load_athlete_metrics()
     metrics["current_local_time"] = datetime.now(ZoneInfo("Europe/Bratislava")).strftime("%A %Y-%m-%d %H:%M")
     for key, fn in (("readiness", lambda: readiness_context(metrics.get("tsb"))),
-                    ("next_session_decided", latest_decision)):
+                    ("next_session_decided", latest_decision),
+                    ("push", lambda: push_status(metrics.get("return_to_training")))):
         try:
             metrics[key] = fn()
         except Exception as e:

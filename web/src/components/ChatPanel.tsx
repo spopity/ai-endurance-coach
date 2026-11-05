@@ -34,8 +34,8 @@ const MODEL_BADGE = {
 } as const;
 
 const MODEL_OPTIONS: { value: ChatModel; label: string; title: string }[] = [
-  { value: "claude", label: "Claude", title: "Coach, Twin, Racing and History use Claude on your subscription - questions only, it can't change your plan or availability. Gemini steps in if Claude fails." },
-  { value: "gemini", label: "Gemini", title: "Coach, Twin, Racing and History use Gemini, which can also save plan changes and availability." },
+  { value: "claude", label: "Claude", title: "Coach, Twin, Racing and History use Claude on your subscription and can save next-session changes and availability. Gemini steps in if Claude fails." },
+  { value: "gemini", label: "Gemini", title: "Coach, Twin, Racing and History use Gemini and can save next-session changes and availability." },
   { value: "local", label: "Local", title: "Answers come from the local model on your GPU - free, but less thorough." },
 ];
 
@@ -255,7 +255,6 @@ export function ChatPanel({
               {MODEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </label>
-          {model === "claude" && <span className="text-orange-300/80">read-only</span>}
         </div>
         <div className="flex items-end gap-2 rounded-2xl border border-white/10 bg-ink-800/80 p-2 focus-within:border-sky-500/40">
           <textarea

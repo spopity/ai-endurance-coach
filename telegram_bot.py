@@ -64,9 +64,8 @@ HELP_TEXT = (
     f"I remember the last {MAX_HISTORY_MESSAGES // 2} exchanges, so follow-ups like \"and tomorrow?\" work. "
     f"The thread resets after {CONVERSATION_IDLE_SECONDS // 3600}h of silence.\n\n"
     "/twin <scenario> - send a what-if straight to the Athlete Twin (projections, climb times, tapers)\n"
-    "Coach, Twin, Racing and History answer with Claude (your subscription) - questions only, it can't change your "
-    "plan or availability. Gemini steps in if Claude fails.\n"
-    "/gemini - answer with Gemini instead (it can save plan changes and availability); /claude switches back\n"
+    "Coach, Twin, Racing and History answer with Claude (your subscription). Gemini steps in if Claude fails.\n"
+    "/gemini - answer with Gemini instead; /claude switches back. Both can save next-session changes and availability\n"
     "/local - toggle Local only: answer with the local model on the home GPU\n"
     "/strava [YYYY-MM-DD] [context] - (re)write the coach note on a Strava activity (latest activity by default), "
     "previewed before posting\n"
@@ -235,11 +234,10 @@ async def set_cloud_model(update: Update, context: ContextTypes.DEFAULT_TYPE, us
     if use_claude:
         await update.effective_message.reply_text(
             "🟠 Claude is answering - Coach, Twin, Racing and History use Claude on your subscription (Gemini steps in "
-            "if it fails). Questions only: it can't change your next session or save availability - send /gemini for that.")
+            "if it fails).")
     else:
         await update.effective_message.reply_text(
-            "☁️ Gemini is answering - Coach, Twin, Racing and History use Gemini, which can also save plan changes and "
-            "availability. Send /claude to switch back.")
+            "☁️ Gemini is answering - Coach, Twin, Racing and History use Gemini. Send /claude to switch back.")
 
 
 async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -559,7 +557,7 @@ async def post_init(application: Application):
         BotCommand("briefing", "Today's briefing now"),
         BotCommand("twin", "Ask the Athlete Twin a what-if directly"),
         BotCommand("local", "Toggle Local only (home GPU instead of Gemini)"),
-        BotCommand("claude", "Answer with Claude (default, read-only)"),
+        BotCommand("claude", "Answer with Claude (default)"),
         BotCommand("gemini", "Answer with Gemini (can save changes)"),
         BotCommand("strava", "(Re)write the coach note on a Strava activity"),
         BotCommand("reset", "Start a fresh conversation"),

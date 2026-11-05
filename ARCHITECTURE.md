@@ -58,7 +58,7 @@ lists **every file in the project** with what it does and how it affects the who
   injury narration and "Local only" mode.
 - **Claude** (Claude Code via the Claude Agent SDK on the athlete's subscription,
   `CLAUDE_CODE_OAUTH_TOKEN`): the default for the Coach, Twin, Racing and History chat answers.
-  Read-only (`core/claude_agent.py`). Gemini can be picked per chat, steps in when a Claude call
+  Same chat tools as Gemini (`core/claude_agent.py`). Gemini can be picked per chat, steps in when a Claude call
   fails, and is used whenever no Claude token is set.
 - **Strava**: activity names (read) and coach notes in descriptions (write).
 - **Withings**: body weight.
@@ -171,10 +171,10 @@ Every chat message goes through a LangGraph pipeline:
    switch to their local versions in `agents/local.py`. With `use_claude` set (the chat default
    when a Claude token exists), the Coach,
    Twin, Racing and History nodes keep their prompts but answer through
-   `core/claude_agent.py`: Claude Code with only the read-only tools (no proposals, no
-   availability), every built-in tool off, no settings or CLAUDE.md loaded, an empty
+   `core/claude_agent.py`: Claude Code with exactly the tools the agent passes (as Gemini gets them,
+   including proposals and availability in a live chat turn), every built-in tool off, no settings or CLAUDE.md loaded, an empty
    working directory and its own config dir (`state/claude`). If the Claude call fails, the
-   agent's own Gemini call answers with the same read-only prompt and tools, prefixed with a
+   agent's own Gemini call answers with the same prompt and tools, prefixed with a
    one-line note (`claude_or_gemini`).
 
 ### 4.2 The AI Coach's rules (`agents/ai_coach.py`)
@@ -198,6 +198,7 @@ Its prompt holds a ranked rulebook. In short:
 - **Readiness overrides the plan:** red means rest or easy only, amber means no VO2max
   (not even the Base touches), green means the full plan.
 - The injury-risk tool must be called before prescribing anything hard.
+- **Push experiments** (§4.7b) may raise the week's top load to `push.week_ceiling`; they never change the plan.
 - Stick to the already-decided next session unless something new justifies a change.
   Say "next session", not "tomorrow".
 - The athlete's explicit "easy / hard / rest / short / long" overrides the logic.
@@ -326,6 +327,25 @@ Every 10 minutes the timer looks for activities of **any type** that are at leas
 - **Manual posting:** Telegram `/strava [date] [context]` and the dashboard dialog
   preview a note, allow a rewrite with extra context, and post it. Manual posts
   override `#nocoach`.
+
+### 4.7b Push experiments (`core/push.py`)
+
+The athlete says "I can do more" in chat and the coach may go above the plan for a short window.
+The plan doesn't change: `training_blocks`, its targets and verdicts are untouched, and the coach
+gets `push` in its context (rule 18).
+
+- `start_push` / `stop_push` are chat tools, saved in `athlete_settings` (key `push`). A push
+  lasts up to 14 days (7 by default) and ends by itself.
+- **The ceiling** is the load for a CTL ramp of 4/week (level 1) or 5/week (level 2), never above the
+  90th percentile of what the athlete did at this CTL in the benchmark years (`BENCHMARK_YEARS`),
+  scaled for days off and never below the plan's own maximum.
+- **Checked every day.** Off, with reasons in `blocked_because`, on a form/HRV/feedback verdict that
+  isn't green, a HIGH injury finding, a caution about load, recovery, biomechanics or how sessions
+  felt, in a recovery/taper/race week, or while coming back from illness or a break. A running caution only sets
+  `no_extra_running`. Intensity also needs a Build or race-prep week and no cautions at all.
+- **Each push is judged when it ends:** `absorbed` (more load than the plan, no warning) opens level 2,
+  `too_much` (warning, illness, or the athlete says so) goes back to level 1 after a 7-day cooldown,
+  `no_extra` changes nothing, and a push stopped within 3 days doesn't count.
 
 ### 4.8 Race planning (`core/race_planner.py`, `core/races.py`, `core/weather.py`)
 
@@ -463,6 +483,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `next_session.py` | Decides, stores and reads the one shared next-session decision; `refresh()` re-decides a stale one (24 h without an activity, every morning) | Keeps Strava, the dashboard, the briefing and chat consistent, and never lets a skipped session sit there |
 | `periodization.py` | Adaptive phase engine: replays closed weeks (completed/partial/missed), rolling Base→Build gate, CTL-drop step-back, form/HRV-timed deloads, CTL-based targets, projection; `hrv_trend()` and the graded `return_status()` | Decides what phase each week is and why, and how to come back after days off |
 | `plan.py` | Session classification (endurance/SST/VO2/run/weights), planned vs done per week, plan summary for prompts | The plan card and the coach's view of "what's left this week" |
+| `push.py` | Push experiments: time-boxed load above the plan, the ceiling from a CTL ramp and the benchmark years, a daily check against readiness and the injury checks, a result per push | Lets the athlete try more without changing the plan |
 | `focus.py` | Cycling vs dual-sport focus: goals, running rule, session-mix and focus-text adjustments, saved in `athlete_settings` | Switches the whole coaching doctrine for winter |
 | `gym.py` | `gym_focus()`: a gym session counts as leg work only if its title names legs | Stops upper-body/core sessions from limiting bike/run work |
 | `simulators.py` | CTL/ATL/TSB forward projection (Intervals.icu model); cycling physics for speed and time on climbs/segments | Numbers for the Twin and the race planner |
@@ -470,7 +491,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `races.py` | Races from the Intervals.icu calendar (`fetch_races` for any range, `fetch_upcoming_races`; with description parsing) and past races from history | Race lists for the agents, briefing, dashboard and the race-anchored plan |
 | `weather.py` | Open-Meteo geocoding, forecast and 5-year climatology | Race-day conditions for pacing and fuelling |
 | `llm.py` | LLM factories: `local_llm` (Ollama `qwen3:8b`, thinking off, 8k context, 30 min keep-alive) and `gemini_llm` (`gemini-pro-latest`), each tagged with the component using it | One local model for everything (the GPU never reloads); every LLM call is logged |
-| `claude_agent.py` | `claude_or_gemini` / `ask_claude`: answers one agent's question with Claude Code (Claude Agent SDK) on the subscription - the agent's own prompt, only the read-only tools as an in-process MCP server, no built-in tools, settings or CLAUDE.md; logged to `api_calls` as `claude` (cost 0) | The default, read-only chat model, with Gemini as fallback |
+| `claude_agent.py` | `claude_or_gemini` / `ask_claude`: answers one agent's question with Claude Code (Claude Agent SDK) on the subscription - the agent's own prompt, the tools it passes as an in-process MCP server, no built-in tools, settings or CLAUDE.md; logged to `api_calls` as `claude` (cost 0) | The default chat model, with Gemini as fallback |
 | `api_log.py` | Records every outgoing call into `api_calls`: LangChain usage callback (tokens, cost estimate, price table), `requests` hook for HTTP services, `trigger()` reason tags | Source data for the System page and Gemini cost tracking |
 | `usage.py` | Aggregates `api_calls` for `/api/usage`: totals, timeline, cost projection, components, flows, busy hours, recent calls | Feeds the dashboard's System page |
 | `chat.py` | Shared front-end helpers: `ask_supervisor` (async/sync), SSE `stream_reply`, `run_sync`, agent display names | The web UI, Telegram and timers talk to the graph the same way |

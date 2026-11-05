@@ -78,10 +78,15 @@ model instead, which costs nothing but gives shorter answers.
 
 Optionally, **Claude** answers instead of Gemini, using Claude Code on your own Claude
 subscription: set `CLAUDE_CODE_OAUTH_TOKEN` and it becomes the chat default (dashboard model
-selector, Telegram `/claude` / `/gemini`). In that mode the agents are **read-only**: they can
-look at all your data but can't propose a next-session change or save availability - pick
-Gemini for that. If a Claude call fails, Gemini answers instead and says so; without a token
+selector, Telegram `/claude` / `/gemini`). Claude gets the same chat tools as Gemini (next-session
+proposals, availability, pinned sessions, push experiments) and nothing else: Claude Code's built-in
+tools stay off. If a Claude call fails, Gemini answers instead and says so; without a token
 everything uses Gemini.
+
+**Push experiments:** tell the coach you can do more and it may go above the plan for up to two
+weeks, without changing the plan. The ceiling comes from a safe fitness ramp and from what you did
+at this fitness in your best years (set `BENCHMARK_YEARS` in `core/push.py` to yours). It's rechecked
+daily against readiness and the injury checks, and each push gets a result that decides the next one.
 
 **Intervals.icu is the source of truth for training.** Activities, the fitness/fatigue
 model (CTL/ATL), FTP/LTHR and your race calendar all come from it, so you edit
@@ -102,7 +107,7 @@ respiration, SpO2 and steps come straight from the Garmin Connect Personal API.
 | [Intervals.icu](https://intervals.icu) | **Yes** | All training data, fitness model, race calendar | Free |
 | [Garmin Connect](https://connect.garmin.com) Personal API key | **Yes** for health data | Sleep, HRV, resting HR, stress, Body Battery, SpO2, steps | Free |
 | [Google AI Studio](https://aistudio.google.com/apikey) (Gemini API key) | **Yes** for the cloud agents | Coach, Racing, History, Twin, Strava notes | Pay per use; the System page shows the cost |
-| Claude subscription (`claude setup-token`) | Optional | Read-only chat answers (the default when set), Gemini as fallback | Your subscription; check Anthropic's terms for your plan |
+| Claude subscription (`claude setup-token`) | Optional | Chat answers (the default when set), Gemini as fallback | Your subscription; check Anthropic's terms for your plan |
 | [Ollama](https://ollama.com) | **Yes** (routing and Local only) | Supervisor, injury narration, Local-only mode | Free; runs on your own machine |
 | Telegram bot (via [@BotFather](https://t.me/BotFather)) | Optional | Morning briefing and chat on your phone | Free |
 | [Strava API app](https://www.strava.com/settings/api) | Optional | Syncing activity names, coach notes on activities | Free |

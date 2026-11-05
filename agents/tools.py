@@ -268,16 +268,83 @@ def build_propose_session_tool(turn_id: str) -> StructuredTool:
     )
 
 
+def _replan():
+    """Recompute this week's plan and the next session in the background (the reply goes on)."""
+    import logging
+    import threading
+
+    from core.next_session import replan
+
+    def work():
+        try:
+            replan()
+        except Exception:
+            logging.getLogger("AI_COACH_V1.tools").error("Re-plan after a chat change failed", exc_info=True)
+    threading.Thread(target=work, daemon=True).start()
+
+
+def build_push_tools() -> list[StructuredTool]:
+    """Tools for ai_coach in a live chat turn: start or stop a push experiment (core/push.py) - more
+    than the plan for a few days, checked daily against readiness and the injury checks. Saved straight
+    away, it is the athlete's own call; the plan itself doesn't change."""
+    from typing import Literal
+
+    from core import push
+    from core.metrics import load_athlete_metrics
+
+    class StartArgs(BaseModel):
+        kind: Literal["volume", "intensity", "both"] = Field(description=(
+            "volume: more easy time. intensity: a bigger main set in the planned quality session. both: the "
+            "athlete wants more of everything. Use what they asked for; 'volume' if they didn't say."))
+        days: int = Field(push.DEFAULT_DAYS, description=f"How long, at most {push.MAX_DAYS} days. It ends by itself.")
+        note: str = Field("", description="The athlete's reason in a few words, e.g. 'feeling fresh, more time this week'.")
+
+    def start_push(kind: str, days: int = push.DEFAULT_DAYS, note: str = "") -> str:
+        back = load_athlete_metrics().get("return_to_training")
+        try:
+            s = push.start(kind, days, note, back)
+        except push.PushError as e:
+            return f"Not started. {e} Tell the athlete why, in one line."
+        _replan()
+        return (f"Push started: {s['kind']}, level {s['level']}, until {s['until']}. Up to {s['week_ceiling']} TSS this "
+                f"week instead of {s['plan_target_max']}, {s['room_left_this_week']} left. The plan is unchanged and the "
+                "next session is being recomputed. Confirm in one line, and ask them to rate how the sessions feel.")
+
+    def stop_push(felt_too_much: bool = False) -> str:
+        back = load_athlete_metrics().get("return_to_training")
+        try:
+            e = push.stop(felt_too_much, back)
+        except push.PushError as err:
+            return str(err)
+        _replan()
+        return (f"Push ended: {e['load']} TSS against {e['plan_load']} planned, result {e['result']}. Back to the plan, "
+                "next session being recomputed. Tell the athlete in one line.")
+
+    return [
+        StructuredTool.from_function(
+            func=start_push, name="start_push", args_schema=StartArgs,
+            description=(
+                "Start a push experiment when the athlete says they can do more ('I feel I can do more', 'push me this "
+                "week', 'let's try more volume') or agrees to your offer. Never on your own initiative. It refuses, "
+                "with the reasons, when readiness or the injury checks object."),
+        ),
+        StructuredTool.from_function(
+            func=stop_push, name="stop_push",
+            description=(
+                "End the running push when the athlete asks ('back to the plan', 'that was too much'). "
+                "felt_too_much=true when they say it was too much or they feel worn down or sore."),
+        ),
+    ]
+
+
 def build_availability_tools() -> list[StructuredTool]:
     """Tools for ai_coach in a live chat turn: save what the athlete says about days they
     can't train or can only train briefly (core/availability.py). Saved straight away - it is
     the athlete's own statement - then the plan and the next session are recomputed."""
-    import threading
     from datetime import date, timedelta
     from typing import Literal, Optional
 
     from core import availability
-    from core.next_session import replan
 
     class RecordArgs(BaseModel):
         kind: Literal["sick", "away", "unavailable", "limited"] = Field(description=(
@@ -288,16 +355,6 @@ def build_availability_tools() -> list[StructuredTool]:
                                       "today and the next 2 dates).")
         max_minutes: Optional[int] = Field(None, description="Only for limited: the most training time per day.")
         note: str = Field("", description="The athlete's reason in a few words, e.g. 'flu', 'work trip to Vienna'.")
-
-    def _replan():
-        """Recompute this week's plan and the next session in the background (the reply goes on)."""
-        def work():
-            try:
-                replan()
-            except Exception:
-                import logging
-                logging.getLogger("AI_COACH_V1.tools").error("Re-plan after availability change failed", exc_info=True)
-        threading.Thread(target=work, daemon=True).start()
 
     def record_availability(kind: str, start_date: str, days: int, max_minutes: Optional[int] = None,
                             note: str = "") -> str:

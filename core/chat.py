@@ -85,7 +85,7 @@ async def ask_supervisor(
     content, agent}) - only the most recent turns are passed on (see core/history.py).
     `agent` pins a specific agent node (e.g. "athlete_twin") and skips LLM routing.
     `local_only` answers with the local model instead of Gemini (agents/local.py).
-    `use_claude` answers Coach/Twin/Racing/History with Claude, read-only (core/claude_agent.py).
+    `use_claude` answers Coach/Twin/Racing/History with Claude (core/claude_agent.py).
     `turn_id` (new_turn_id()) marks a live chat turn - see turn_proposal().
     """
     # Graph nodes are synchronous (blocking Ollama/Gemini/DB calls) - keep them off the event loop.
@@ -172,7 +172,7 @@ async def stream_reply(message: str, history: list[dict] | None = None, agent: s
                 started.add(name)
                 yield {"type": "status", "content": f"Engaging {AGENT_DISPLAY_NAMES[name]}..."}
                 if claude and name in CLAUDE_AGENT_NODES:
-                    yield {"type": "status", "content": "Engaging Claude (read-only)..."}
+                    yield {"type": "status", "content": "Engaging Claude..."}
 
             elif kind == "on_chat_model_start":
                 if "ChatOllama" in name:

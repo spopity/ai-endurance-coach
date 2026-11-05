@@ -2,9 +2,9 @@
 subscription - the default for the chat's cloud agents (Coach, Twin, Racing, History), with Gemini
 as the alternative and as the fallback when Claude fails (claude_or_gemini).
 
-Question/answer only - Claude can read data but never change anything:
-- only the read-only coach tools in READ_ONLY_TOOLS are exposed, as an in-process MCP server;
-  anything else an agent passes (e.g. propose_next_session_change, record_availability) is dropped;
+Claude can do exactly what Gemini can in the chat:
+- it gets the tools the agent passes, nothing more, as an in-process MCP server - so in a live chat turn
+  that includes propose_next_session_change, record_availability, plan_session and the push tools;
 - every Claude Code built-in tool is switched off (no Bash, Read, Edit, Write, Web...), no other MCP
   server, settings file, CLAUDE.md, skill or plugin is loaded, and can_use_tool denies anything else;
 - it runs in an empty working directory with its own config dir (state/claude), never ~/.claude.
@@ -40,23 +40,8 @@ STATE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 CONFIG_DIR = os.path.join(STATE_DIR, "claude")
 WORK_DIR = os.path.join(STATE_DIR, "claude-empty")
 
-# Tools that only read. A new tool must be added here deliberately before Claude can use it.
-READ_ONLY_TOOLS = {
-    "search_historical_activities", "get_activity_details", "get_historical_wellness_trend", "check_injury_risk",
-    "wellness_summary", "training_summary", "fitness_gain_windows", "race_history", "query_database",
-    "analyze_power_pacing", "project_training_load", "estimate_ride_time", "list_upcoming_races",
-    "build_race_plan", "review_race",
-}
-
 # Starts an answer Gemini gave because Claude failed (front-ends use it to label the answer).
 FALLBACK_NOTE = "_Claude was unavailable, so Gemini answered this one._\n\n"
-
-READ_ONLY_NOTE = """
-
-**Read-only mode:** you answer questions only. You cannot save, change or record anything - not the next
-session, availability, sick days or pinned sessions. If the athlete asks for such a change, say it can't be
-done while Claude answers, give your recommendation, and tell them to switch the chat model back to Gemini
-to save it. Your tools only read data."""
 
 
 def configured() -> bool:
@@ -96,28 +81,24 @@ async def _ask(component: str, system_prompt: str, tools: list[BaseTool], prior,
     )
     from claude_agent_sdk.types import CanUseToolShadowedWarning
 
-    # Expected: the allowed read-only tools skip can_use_tool; it still denies everything else.
+    # Expected: the agent's tools skip can_use_tool; it still denies everything else.
     warnings.simplefilter("ignore", CanUseToolShadowedWarning)
 
-    read_only = [t for t in tools if t.name in READ_ONLY_TOOLS]
-    dropped = sorted({t.name for t in tools} - READ_ONLY_TOOLS)
-    if dropped:
-        logger.info(f"{component}: not exposing write/unknown tools to Claude: {dropped}")
-    allowed = [f"mcp__{SERVER}__{t.name}" for t in read_only]
+    allowed = [f"mcp__{SERVER}__{t.name}" for t in tools]
 
     async def can_use_tool(name, _input, _context):
         if name in allowed:
             return PermissionResultAllow()
-        logger.warning(f"{component}: Claude tried a tool outside the read-only set: {name}")
-        return PermissionResultDeny(message="Read-only Q&A: only the coach data tools are available.")
+        logger.warning(f"{component}: Claude tried a tool it wasn't given: {name}")
+        return PermissionResultDeny(message="Only the coach tools are available.")
 
     os.makedirs(CONFIG_DIR, exist_ok=True)
     os.makedirs(WORK_DIR, exist_ok=True)
     options = ClaudeAgentOptions(
-        system_prompt=system_prompt + READ_ONLY_NOTE,
+        system_prompt=system_prompt,
         model=MODEL,
         tools=[],  # no built-in tools at all
-        mcp_servers={SERVER: create_sdk_mcp_server(name=SERVER, tools=[_sdk_tool(t) for t in read_only])},
+        mcp_servers={SERVER: create_sdk_mcp_server(name=SERVER, tools=[_sdk_tool(t) for t in tools])},
         strict_mcp_config=True,
         allowed_tools=allowed,
         can_use_tool=can_use_tool,
@@ -160,7 +141,7 @@ async def _ask(component: str, system_prompt: str, tools: list[BaseTool], prior,
 
 
 def ask_claude(component: str, system_prompt: str, tools: list[BaseTool], prior: list[BaseMessage], question: str) -> str:
-    """Blocking: answers `question` (after the `prior` conversation) with Claude, using only read-only tools."""
+    """Blocking: answers `question` (after the `prior` conversation) with Claude, using the tools the agent passes."""
     if not configured():
         raise RuntimeError("CLAUDE_CODE_OAUTH_TOKEN is not set (run `claude setup-token`)")
     coro = _ask(component, system_prompt, tools, prior, question)
@@ -175,7 +156,7 @@ def ask_claude(component: str, system_prompt: str, tools: list[BaseTool], prior:
 def claude_or_gemini(component: str, system_prompt: str, tools: list[BaseTool], prior: list[BaseMessage],
                      question: str, gemini: Callable[[], str]) -> str:
     """Answers with Claude; if Claude isn't set up or fails, with `gemini()` - the agent's own Gemini call,
-    given the same read-only prompt and tools - and says so at the top of the answer."""
+    given the same prompt and tools - and says so at the top of the answer."""
     try:
         return ask_claude(component, system_prompt, tools, prior, question)
     except Exception as e:

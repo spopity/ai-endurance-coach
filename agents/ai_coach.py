@@ -10,7 +10,8 @@ from core.injury_checks import SLEEP_MIN_HOURS
 from core.history import split_state
 from agents.injury import build_injury_check_tool
 from agents.tools import (
-    activity_details_tool, build_availability_tools, build_propose_session_tool, historical_tool, historical_wellness_tool,
+    activity_details_tool, build_availability_tools, build_propose_session_tool, build_push_tools, historical_tool,
+    historical_wellness_tool,
 )
 
 
@@ -55,6 +56,7 @@ Maintain a highly knowledgeable, professional, yet witty tone.
 15. **Athlete feedback:** `athlete_feedback` holds this morning's check-in (which also covers yesterday's easy and gym sessions) and the RPE / legs of recent hard sessions - the athlete's own words, which outrank the numbers when they disagree. Sore legs after a hard session, an unusually high RPE (9-10 on a sweet spot / threshold session) or a sore check-in means the body is tired even if TSB looks fine: go easier. Readiness already includes these signals.
 16. **Goal and FTP:** `current_training_block.goal` says what the plan works towards - an A/B race (race prep, taper, race week come from the plan) or, with no race, fitness and FTP. Power targets use `ftp` - the set FTP, or eFTP once there was no FTP test for over 8 weeks (`ftp_source` "eftp"); `ftp_check` says when an FTP test (ramp or 20 min, every 6-8 weeks) is due - from 6 weeks, suggest one, ideally after an easy day. `intensity_distribution` is the last 28 days' easy/moderate/hard split; keep it pyramidal (~75-85% easy, under ~25% moderate).
 17. **Wording - "next session", not "tomorrow":** Call your recommendation "your next session" / "next training", not "tomorrow's". Check `current_local_time`: early in the day with nothing logged today, the next session is most likely today. Name a specific day only when the athlete asks about that day.
+18. **Push experiment:** `push` says whether the athlete asked to try more than the plan. The plan doesn't change: same phase, focus and session mix. While `push.active` and `push.allowed_today`, the top of the week's load is `push.week_ceiling` instead of `target_weekly_load_max` (Rule 10), with `push.room_left_this_week` left - the ceiling is a limit, not a goal, and the extra comes on top of the planned sessions, never instead of the rest days. Volume: lengthen an endurance ride by 20-30 min or add one easy Zone 2 ride; keep extra time on the bike, because running tissue adapts more slowly: at most ~10% on the long run and no extra hard run (with `push.no_extra_running`, no extra run time at all). Intensity, only if `push.intensity_allowed`: one more rep or about 10-15% more time in the main set of a session the plan already has - never an extra hard session, and still no two hard days in a row. If `push.allowed_today` is false, follow the plan and say why from `push.blocked_because`; if a warning there is health-related, offer to stop the push. All other rules, especially 6, 9 and 11, come first. {push_rule} `push.benchmark` is what the athlete typically did at this fitness in their benchmark years (`typical`, `high`, `top` TSS a week) - use it to judge their fitness and targets, not the last two lighter years. `push.last_result` says how the last experiment went (absorbed / too_much / no_extra): mention it when relevant.
 
 **Data Interpretation:**
 - **CRITICAL:** The current date is provided in `metrics_context.current_date` (and the athlete's local time in `current_local_time`). All relative terms like "today", "yesterday", and "tomorrow" MUST be interpreted relative to this date.
@@ -87,6 +89,11 @@ CHANGE_RULE_CHAT = (
     "a button. Never call it unasked - if you suggest a different session, offer to save it instead."
 )
 CHANGE_RULE_NO_CHAT = "Do not offer to change it here."
+PUSH_RULE_CHAT = (
+    "When the athlete says they can do more, call `start_push`; when they want to stop or it was too much, call "
+    "`stop_push`. If `push.can_offer` is true you may offer a push once, in one line - never start one unasked."
+)
+PUSH_RULE_NO_CHAT = "Pushes are started and stopped in chat only."
 AVAILABILITY_RULE_CHAT = (
     "When the athlete tells you about days they can't train or can only do a shorter session, call "
     "`record_availability` right away with the exact dates, then confirm those dates and when normal training "
@@ -114,8 +121,8 @@ def call_ai_coach(state: AgentState):
     ftp = metrics_context.get("ftp") or 250
     fthr = metrics_context.get("fthr") or 165
 
-    # A live chat turn lets the coach propose a change and record availability - never in Claude's read-only mode.
-    live = bool(state.get("turn_id")) and not state.get("use_claude")
+    # A live chat turn lets the coach propose a change and record availability, whichever model answers.
+    live = bool(state.get("turn_id"))
     focus = get_focus()
     metrics_str = json.dumps(metrics_context, indent=2, default=str)
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
@@ -124,6 +131,7 @@ def call_ai_coach(state: AgentState):
         sleep_min_hours=SLEEP_MIN_HOURS,
         change_rule=CHANGE_RULE_CHAT if live else CHANGE_RULE_NO_CHAT,
         availability_rule=AVAILABILITY_RULE_CHAT if live else AVAILABILITY_RULE_NO_CHAT,
+        push_rule=PUSH_RULE_CHAT if live else PUSH_RULE_NO_CHAT,
     )
 
     injury_tool = build_injury_check_tool(metrics_context)
@@ -131,6 +139,7 @@ def call_ai_coach(state: AgentState):
     if live:  # the athlete can approve a change and state availability
         tools.append(build_propose_session_tool(state["turn_id"]))
         tools += build_availability_tools()
+        tools += build_push_tools()
     def gemini() -> str:
         agent = create_react_agent(cloud_llm, tools, prompt=system_prompt)
         result = agent.invoke({"messages": prior + [HumanMessage(content=question)]})
