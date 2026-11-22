@@ -14,6 +14,7 @@ import { ActivitiesTable } from "./components/ActivitiesTable";
 import { PlanCard } from "./components/PlanCard";
 import { NextSessionCard } from "./components/NextSessionCard";
 import { WeekAheadCard } from "./components/WeekAheadCard";
+import { WorkoutCard } from "./components/WorkoutCard";
 import { ChatPanel } from "./components/ChatPanel";
 import { SystemPage } from "./components/SystemPage";
 import { Skeleton } from "./components/Card";
@@ -142,6 +143,7 @@ export default function App() {
             {overview ? <KpiRow data={overview} /> : <Skeleton className="h-[116px]" />}
 
             <NextSessionCard refreshKey={refreshKey} onAsk={askCoach} />
+            <WorkoutCard refreshKey={refreshKey} />
             <WeekAheadCard refreshKey={refreshKey} />
 
             <div className="grid grid-cols-1 gap-3 lg:gap-4 xl:grid-cols-3">

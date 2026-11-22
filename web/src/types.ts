@@ -267,3 +267,30 @@ export interface WeekAhead {
   days: WeekDay[];
   dropped: { week: string; session: string }[];
 }
+
+export type WorkoutStatus = "draft" | "pushed" | "skipped";
+
+export interface Workout {
+  kind: string;
+  sport: WeekSport;
+  title: string;
+  name: string;
+  type: string;
+  description: string;
+  plan_detail: string;
+  moving_time_sec: number | null;
+  structured: boolean;
+  status: WorkoutStatus;
+  event_id: number | null;
+  pushed_at: string | null;
+  changed: boolean;
+  in_plan: boolean;
+}
+
+export interface WorkoutDay {
+  date: string;
+  weekday?: string;
+  status: string;
+  readiness?: ReadinessLevel;
+  workouts: Workout[];
+}

@@ -33,7 +33,7 @@ lists **every file in the project** with what it does and how it affects the who
 | What | How it runs | Purpose |
 |---|---|---|
 | `app.py` | systemd `ai-coach-v1.service` (port 8000) | FastAPI: dashboard, JSON API, chat streaming, `/sync-data` |
-| `telegram_bot.py` | systemd `ai-coach-telegram.service` | Morning briefing and check-in, session feedback, chat, `/week`, `/strava` note editor |
+| `telegram_bot.py` | systemd `ai-coach-telegram.service` | Morning briefing and check-in, today's workouts with Push to Intervals.icu, session feedback, chat, `/week`, `/workout`, `/strava` note editor |
 | Data sync | host crontab, every 30 min: `POST /sync-data` | Pulls the last 5 days of activities and fitness from Intervals.icu and health data from Garmin |
 | Strava notes | `ai-coach-strava-notes.timer`, every 10 min | Writes a coach note into each new activity's Strava description |
 | Intervals.icu health | `ai-coach-intervals-health.timer`, every 15 min | Sends a Telegram alert when the API goes down or recovers |
@@ -373,6 +373,33 @@ every sync.
   its first day), the local coach's plan summary, the dashboard (`/api/week-ahead`,
   `WeekAheadCard`) and Telegram `/week`.
 
+### 4.6c Structured workouts on Intervals.icu (`core/workouts.py`)
+
+Each session of a plan day becomes a structured workout in Intervals.icu's workout-builder
+text, and goes onto the Intervals.icu calendar **only when the athlete taps Push**.
+
+- **When:** every morning after the briefing and check-in, the bot sends today's workouts,
+  one message each with **Push to Intervals** / **Skip**. `/workout [date]` and the
+  dashboard's `WorkoutCard` (`GET /api/workouts`, `POST /api/workouts/{day}/{kind}/{push|skip|remove}`)
+  show the same workouts with the same buttons.
+- **Text:** rides use % of FTP (Intervals' own FTP setting) with cadence cues; runs use
+  Intervals' run HR zones (`Z2 HR`, `Z4 HR`). Sets and reps follow the plan's
+  description (sweet spot 3x12/3x15, threshold 3x10, VO2max 5x3/5x4, tempo 2x15, sprints,
+  tempo/threshold runs, hill repeats). Gym becomes a `WeightTraining` event with the
+  prescription as text. A pinned session (the athlete's own words) is pushed as text.
+- **Readiness and time:** amber drops one rep of the main set and adds the warm-up test. A
+  "max N min" day shortens the warm-up and cool-down first, then drops reps.
+- **Push:** `POST /api/v1/athlete/{id}/events` with category `WORKOUT` and `external_id`
+  `aicoach-<date>-<kind>`. Intervals parses the text into steps, so the workout syncs on to
+  Garmin or Zwift like any planned workout, and can be downloaded as .zwo/.fit/.mrc.
+  Remove deletes the event.
+- **State:** `state/workouts/<date>.json` (kept for 30 days) holds the pushed text,
+  the event id and the status (draft / pushed / skipped).
+  - The workout is rebuilt from the plan on every read.
+  - If the plan changes after a push, the workout is marked `changed`, and Push becomes
+    **Update**, which PUTs the same event.
+  - If a pushed session is no longer in the plan, it can only be removed.
+
 ### 4.7 Strava coach notes (`core/strava_notes.py`)
 
 Every 10 minutes the timer looks for activities of **any type** that are at least
@@ -464,7 +491,8 @@ service flow chart, busy hours, per-component token table, and the latest calls.
   - **Morning briefing** at `BRIEFING_TIME`: syncs first, re-checks the next session
     with last night's sleep/HRV, then computed facts plus that shared decision.
   - **Chat** (with 3 h conversation memory), `/twin`, `/claude`, `/gemini`, `/local`, `/strava`, `/briefing`,
-    `/week` (the 7-day plan, §4.6b), `/sync`, `/reset`.
+    `/week` (the 7-day plan, §4.6b), `/workout` (structured workouts with Push to
+    Intervals.icu, §4.6c, also sent every morning after the check-in), `/sync`, `/reset`.
   - **Feedback** (§4.11): RPE and legs after each new session (checked every 10 min,
     not between 22:00 and 07:00), and a check-in (body, motivation) after the briefing.
   - Only user ids listed in `TELEGRAM_ALLOWED_USER_IDS` get answers.
@@ -569,6 +597,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `history.py` | Conversation memory: the last 6 messages, the format the supervisor sees | Makes follow-up questions work |
 | `briefing.py` | The morning briefing: computed facts (readiness, HRV, load vs plan, warnings, race countdown) plus the shared next-session decision, re-checked that morning | The daily Telegram message |
 | `strava.py` | A minimal Strava client: token refresh, list/get/update activities, scope check | Used by name sync and coach notes |
+| `workouts.py` | Turns a plan day's sessions into Intervals.icu workout text (power % FTP, HR zones, reps trimmed for amber / short days) and pushes, updates or removes them on the Intervals.icu calendar | Workouts on the watch / Zwift with one tap, never without it |
 | `schedule.py` | The rolling 7-day plan: lays out what's left of the week's session mix around availability, readiness and the hard/easy rules, with concrete targets | One day-by-day plan for the coach, dashboard and Telegram; adapts after every sync |
 | `strava_notes.py` | Builds, merges and posts Strava coach notes for every activity type (facts + a funny Gemini comment: planned vs done and the training benefit), with privacy rules and `#nocoach` | The public coach voice on Strava |
 | `notify.py` | Sends a plain Telegram message from scripts and timers | Alerts from the health check, sync check and name sync |
@@ -657,6 +686,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `src/components/PmcChart.tsx` | CTL/ATL/TSB chart with a range toggle | Fitness trend |
 | `src/components/WellnessChart.tsx` | HRV, resting HR, sleep and overnight SpO2 chart against the baseline | Recovery trend |
 | `src/components/WeeklyChart.tsx` | Weekly load by sport against the plan target | Load versus plan |
+| `src/components/WorkoutCard.tsx` | The next training day's structured workouts with Push / Skip / Remove (Intervals.icu) | Send a workout to the calendar from the dashboard |
 | `src/components/WeekAheadCard.tsx` | The next 7 days: sessions per day with targets, pinned and hard sessions marked, dropped filler | The day-by-day plan |
 | `src/components/PlanCard.tsx` | Upcoming weeks: phase, load range, planned vs done sessions, cycling/dual focus toggle | The training plan view and focus switch |
 | `src/components/InjuryCard.tsx` | Injury findings by severity, expandable, "ask about this" | Risk visibility |
@@ -676,7 +706,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `.env` | Real secrets and settings (see `.env.example`) |
 | `credentials.json`, `token.json` | Google Calendar OAuth (life agent) |
 | `state/strava_tokens.json`, `state/withings_tokens.json` | OAuth tokens written by the auth scripts and refreshed by the app |
-| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
+| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
 | `logs/` | Rotating logs for each process, plus `sync-cron.log` |
 | `venv/` | The Python virtualenv |
 | `web/node_modules/`, `web/dist/` | Frontend dependencies and the built dashboard (rebuild with `cd web && npm install && npm run build`) |

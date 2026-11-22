@@ -26,7 +26,7 @@ from core.focus import MODES as FOCUS_MODES, get_focus, set_focus
 from core.injury_checks import run_injury_checks
 from core.plan import upcoming_plan
 from core.schedule import build as build_schedule
-from core import strava
+from core import strava, workouts
 from core.strava_notes import build_note, load_activity, publish_note, require_write_scope, strava_url
 from core.races import fetch_upcoming_races
 from core.usage import usage_summary
@@ -117,6 +117,33 @@ def plan(weeks: int = 8):
 def week_ahead():
     """The rolling 7-day plan (core/schedule.py), re-derived from what was done."""
     return _cached("week_ahead", 60, build_schedule)
+
+
+@router.get("/workouts")
+async def get_workouts(day: str | None = None):
+    """Structured workouts for a day (default: the plan's next training day), core/workouts.py."""
+    try:
+        d = date.fromisoformat(day) if day else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="day must be YYYY-MM-DD")
+    return await asyncio.to_thread(workouts.for_day, d)
+
+
+@router.post("/workouts/{day}/{kind}/{action}")
+async def workout_action(day: str, kind: str, action: str):
+    """push / skip / remove one workout on the Intervals.icu calendar - only on the athlete's click."""
+    try:
+        date.fromisoformat(day)
+        await asyncio.to_thread(workouts.act, day, kind, action)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="day must be YYYY-MM-DD")
+    except workouts.WorkoutError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error("Workout action failed", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Intervals.icu: {e}")
+    logger.info(f"Workout {kind} {day}: {action} from the dashboard.")
+    return await asyncio.to_thread(workouts.for_day, date.fromisoformat(day))
 
 
 def _next_session_payload() -> dict:

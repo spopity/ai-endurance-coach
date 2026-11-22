@@ -32,7 +32,7 @@ from core.history import MAX_HISTORY_MESSAGES
 from core.schedule import build as build_schedule, markdown as schedule_markdown
 from core.telegram_format import md_to_telegram_html, split_message
 from core.db import load_env
-from core import availability, feedback, strava
+from core import availability, feedback, strava, workouts
 from core.next_session import (
     ProposalError, apply_proposal, discard_proposal, latest_decision, replan as replan_next_session, session_line,
     why_line,
@@ -80,6 +80,8 @@ HELP_TEXT = (
     "Moving or swapping sessions between days works the same way (\"long ride Thursday instead of Tuesday\").\n"
     "After each hard ride or run I ask for RPE and how your legs feel; easy sessions and gym are covered by the "
     "quick morning check-in.\n"
+    "/workout [YYYY-MM-DD] - today's workouts as structured files; Push puts one on your Intervals.icu "
+    "calendar (it syncs on to Garmin/Zwift from there). They also arrive every morning after the briefing\n"
     "/reset - start a fresh conversation\n"
     "/sync - pull the latest activities + wellness from Intervals.icu\n"
     "/help - show this message"
@@ -412,6 +414,7 @@ async def deliver_briefing(bot, chat_id: int, chat_data: dict):
         remember_turn(chat_data, "(morning briefing)", "ai_coach", text)
         logger.info(f"Briefing sent to {chat_id}.")
         await send_checkin(bot, chat_id)
+        await send_workouts(bot, chat_id, on_day=_local_today(), only_open=True)
     except Exception as e:
         logger.error("Briefing failed", exc_info=True)
         await bot.send_message(chat_id, f"❌ Morning briefing failed: {e}")
@@ -548,6 +551,75 @@ async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_markdown_to(context.bot, update.effective_chat.id, text)
 
 
+# --- Structured workouts (core/workouts.py): built every morning, pushed to Intervals.icu on a tap ---
+
+def workout_buttons(day: str, w: dict) -> InlineKeyboardMarkup | None:
+    cb = lambda action: f"wo:{action}:{day}:{w['kind']}"
+    if not w.get("in_plan", True):
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Remove from Intervals", callback_data=cb("remove"))]])
+    if w["status"] == "pushed":
+        row = [InlineKeyboardButton("🗑 Remove", callback_data=cb("remove"))]
+        if w.get("changed"):
+            row.insert(0, InlineKeyboardButton("⬆️ Update", callback_data=cb("push")))
+        return InlineKeyboardMarkup([row])
+    row = [InlineKeyboardButton("⬆️ Push to Intervals", callback_data=cb("push"))]
+    if w["status"] != "skipped":
+        row.append(InlineKeyboardButton("✖ Skip", callback_data=cb("skip")))
+    return InlineKeyboardMarkup([row])
+
+
+async def send_workouts(bot, chat_id: int, on_day: date | None = None, only_open: bool = False):
+    """One message per workout of the day, with Push/Skip. only_open (the morning run) leaves out
+    workouts already pushed or skipped, unless the plan changed after the push."""
+    try:
+        day = await asyncio.to_thread(workouts.for_day, on_day)
+    except Exception as e:
+        logger.error("Building workouts failed", exc_info=True)
+        await bot.send_message(chat_id, f"❌ Couldn't build today's workouts: {e}")
+        return
+    items = [w for w in day["workouts"]
+             if not only_open or w["status"] == "draft" or w.get("changed") or not w.get("in_plan", True)]
+    if not day["workouts"] and not only_open:
+        await bot.send_message(chat_id, f"No training planned for {day['date']} ({day.get('status', 'rest')}).")
+    for w in items:
+        await bot.send_message(chat_id, workouts.telegram_text(day, w), reply_markup=workout_buttons(day["date"], w))
+
+
+async def cmd_workout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    on_day = None
+    if context.args:
+        try:
+            on_day = date.fromisoformat(context.args[0])
+        except ValueError:
+            await update.effective_message.reply_text("Usage: /workout [YYYY-MM-DD]")
+            return
+    await send_workouts(context.bot, update.effective_chat.id, on_day)
+
+
+async def on_workout_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not await button_allowed(update):
+        return
+    _, action, day, kind = query.data.split(":", 3)
+    await query.answer({"push": "Pushing to Intervals.icu...", "remove": "Removing...", "skip": "Skipped."}.get(action))
+    try:
+        w = await asyncio.to_thread(workouts.act, day, kind, action)
+        d = await asyncio.to_thread(workouts.for_day, date.fromisoformat(day))
+        w = next((x for x in d["workouts"] if x["kind"] == kind), w)
+        text = workouts.telegram_text(d, w)
+        markup = workout_buttons(day, w) if any(x["kind"] == kind for x in d["workouts"]) else None
+    except workouts.WorkoutError as e:
+        text, markup = query.message.text + f"\n\n⚠️ {e}", None
+    except Exception as e:
+        logger.error("Workout button failed", exc_info=True)
+        text, markup = query.message.text + f"\n\n❌ Failed: {e}", None
+    logger.info(f"Workout {kind} {day}: {action} from Telegram.")
+    try:
+        await query.edit_message_text(text, reply_markup=markup)
+    except BadRequest:
+        pass
+
+
 async def cmd_briefing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Briefing requested via /briefing.")
     await deliver_briefing(context.bot, update.effective_chat.id, context.chat_data)
@@ -569,6 +641,7 @@ async def post_init(application: Application):
     await application.bot.set_my_commands([
         BotCommand("week", "The next 7 days of training"),
         BotCommand("briefing", "Today's briefing now"),
+        BotCommand("workout", "Today's workouts - push to Intervals.icu"),
         BotCommand("twin", "Ask the Athlete Twin a what-if directly"),
         BotCommand("local", "Toggle Local only (home GPU instead of Gemini)"),
         BotCommand("claude", "Answer with Claude (default)"),
@@ -612,6 +685,8 @@ def main():
     application.add_handler(CommandHandler("sync", cmd_sync, filters=allowed))
     application.add_handler(CommandHandler("briefing", cmd_briefing, filters=allowed))
     application.add_handler(CommandHandler("week", cmd_week, filters=allowed))
+    application.add_handler(CommandHandler("workout", cmd_workout, filters=allowed))
+    application.add_handler(CallbackQueryHandler(on_workout_button, pattern=r"^wo:"))
     application.add_handler(MessageHandler(allowed & filters.TEXT & ~filters.COMMAND, on_message))
     application.add_handler(MessageHandler(~allowed, on_unauthorized))
     application.add_error_handler(on_error)

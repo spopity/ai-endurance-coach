@@ -170,6 +170,25 @@ function weekAhead() {
   return { generated: today.toISOString(), focus: state.focus.mode, readiness: "green", running_limit: "none", done_today: [], weeks: [], days, dropped: [] };
 }
 
+const DEMO_WORKOUTS = [
+  { kind: "bike_q", sport: "ride", title: "Bike quality", name: "Sweet spot 3x12 min (AI coach)", type: "Ride", moving_time_sec: 4560, structured: true,
+    description: "Warmup\n- 15m Ramp 50-75% 90rpm\n\nMain set 3x\n- 12m 88-94%\n- Easy 5m 55%\n\nCooldown\n- 10m 50%" },
+  { kind: "gym_legs", sport: "gym", title: "Gym - heavy legs", name: "Gym - heavy legs (AI coach)", type: "WeightTraining", moving_time_sec: 2700, structured: false,
+    description: "Squat + split squat + calf raises, 3-4 x 4-8 reps" },
+] as const;
+const workoutStatus = new Map<string, "draft" | "pushed" | "skipped">();
+
+function workoutDay() {
+  return {
+    date: iso(TODAY), weekday: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][TODAY.getDay()], status: "available", readiness: "green",
+    workouts: DEMO_WORKOUTS.map((w) => {
+      const status = workoutStatus.get(w.kind) ?? "draft";
+      return { ...w, plan_detail: w.description, status, event_id: status === "pushed" ? 1 : null,
+        pushed_at: status === "pushed" ? new Date().toISOString() : null, changed: false, in_plan: true };
+    }),
+  };
+}
+
 function nextSession(): NextSession {
   return { readiness: readiness(), decision: state.decision };
 }
@@ -302,6 +321,7 @@ export async function handle(method: string, url: URL, body: Record<string, unkn
     if (path === "/api/weekly") return weekly(num("weeks", 12));
     if (path === "/api/plan") return plan(num("weeks", 8));
     if (path === "/api/week-ahead") return weekAhead();
+    if (path === "/api/workouts") return workoutDay();
     if (path === "/api/next-session") return nextSession();
     if (path === "/api/focus") return { ...state.focus, options: { cycling: "Cycling focus", dual: "Dual-sport (bike + run)" } };
     if (path === "/api/activities") return DATA.activities.slice(0, num("limit", 20)).map(({ kind: _k, day: _d, interval: _i, strava_note: _n, ...a }) => a);
@@ -320,6 +340,12 @@ export async function handle(method: string, url: URL, body: Record<string, unkn
       await wait(1800);
       state.lastSync = new Date().toISOString();
       return { message: "Activities: 0 new, 5 updated | Wellness: 0 new, 6 updated" };
+    }
+    const wo = path.match(/^\/api\/workouts\/[^/]+\/([^/]+)\/(push|skip|remove)$/);
+    if (wo) {
+      await wait(700);
+      workoutStatus.set(wo[1], wo[2] === "push" ? "pushed" : "skipped");
+      return workoutDay();
     }
     if (path === "/api/focus") {
       const mode = body.mode as FocusMode;

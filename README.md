@@ -15,6 +15,10 @@ You reach the coach in three ways:
   itself after every sync (a missed session moves, the filler drops), injury-risk card, next-race
   card with weather and pacing, activity list, a streaming chat, and a System page with
   API-call and Gemini cost tracking.
+- **Structured workouts**: each morning the day's sessions become Intervals.icu workouts
+  (power as % FTP, runs by HR zone). One tap on Push in Telegram or the dashboard puts a
+  workout on your Intervals.icu calendar, and from there it syncs to Garmin or Zwift.
+  Nothing is pushed without that tap.
 - **Telegram bot**: a morning briefing and check-in, a two-tap RPE/legs question after
   each session, chat with memory, what-if simulations, and Strava note editing. Tell it
   "sick for 3 days", "only 40 min today" or "swap Tuesday's intervals with Thursday's
@@ -312,7 +316,7 @@ Then set `LIFE_AGENT_ENABLED=true`.
 3. Run `venv/bin/python telegram_bot.py` (or the systemd unit, §6) and send `/start`.
 
 Commands: `/twin <what-if>`, `/claude` / `/gemini` (pick the chat model), `/local` (toggle Local only), `/strava [date] [context]`,
-`/briefing`, `/week` (the next 7 days), `/sync`, `/reset`. The bot uses long polling, so nothing needs to be exposed
+`/briefing`, `/week` (the next 7 days), `/workout [date]` (structured workouts with Push to Intervals.icu), `/sync`, `/reset`. The bot uses long polling, so nothing needs to be exposed
 to the internet.
 
 ### 4.6 Garmin (health data)
