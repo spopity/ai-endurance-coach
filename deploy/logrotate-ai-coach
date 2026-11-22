@@ -1,0 +1,17 @@
+# AI Coach v1: logs written by short-lived processes, which Python's own daily rotation
+# never rotates (each run starts fresh) - plus sync-cron.log, appended by the host's cron.
+# The long-running services (app.log, telegram.log) rotate themselves daily.
+/opt/ai-coach-v1/logs/intervals_health.log
+/opt/ai-coach-v1/logs/health.log
+/opt/ai-coach-v1/logs/backup.log
+/opt/ai-coach-v1/logs/sync-cron.log {
+    su coach coach
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 coach coach
+}

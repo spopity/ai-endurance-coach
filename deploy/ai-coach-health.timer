@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly health check for AI Coach v1
+
+[Timer]
+OnCalendar=*-*-* *:07:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

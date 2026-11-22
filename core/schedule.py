@@ -10,7 +10,8 @@ isn't next to another hard day; a hard ride cut short still counts when it reach
 quality threshold (core/plan.classify) and otherwise stays to do; when the days run out, the
 filler goes first (an easy ride, then an easy run, then the third gym session) and the key
 sessions stay (bike quality, run quality, long ride, long run). Nothing is ever doubled up to
-"make up" a missed session.
+"make up" a missed session. A session pushed to Intervals.icu (core/workouts.py) and done with
+>= 80% compliance counts as that session, whatever the zone times say.
 
 Rules for the layout (the dual-sport week in core/focus.py):
 - at most one endurance session a day; gym can share a day,
@@ -34,6 +35,7 @@ from core import availability
 from core.focus import get_focus
 from core.gym import LEG_WORDS, WEIGHTS_TYPES
 from core.overview import cached, query
+from core.metrics import FTP_TEST_NAME
 from core.plan import LONG_RIDE_MIN, RIDE_TYPES, RUN_TYPES, classify, run_kind, week_block
 
 logger = logging.getLogger("AI_COACH_V1.schedule")
@@ -42,19 +44,33 @@ TZ = ZoneInfo("Europe/Bratislava")
 DAYS = 7
 WEEKDAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-HARD = {"bike_q", "run_q", "gym_legs"}
-ENDURANCE = {"bike_q", "long_ride", "ride", "run_q", "long_run", "run"}
+HARD = {"bike_q", "run_q", "gym_legs", "ftp_test", "run_test"}
+ENDURANCE = {"bike_q", "long_ride", "ride", "run_q", "long_run", "run", "ftp_test", "run_test"}
 SPORT = {"bike_q": "ride", "long_ride": "ride", "ride": "ride", "run_q": "run", "long_run": "run", "run": "run",
-         "gym_legs": "gym", "gym_upper": "gym", "gym_core": "gym"}
+         "gym_legs": "gym", "gym_upper": "gym", "gym_core": "gym", "ftp_test": "ride", "run_test": "run"}
 # Minutes a day needs for the session (limited days).
-NEEDS = {"bike_q": 45, "run_q": 35, "long_ride": 90, "long_run": 50, "ride": 30, "run": 25}
+NEEDS = {"bike_q": 45, "run_q": 35, "long_ride": 90, "long_run": 50, "ride": 30, "run": 25, "ftp_test": 60,
+         "run_test": 55}
 # Key sessions, most important first, and how much keeping each one is worth to the layout.
-KEY_WEIGHT = {"bike_q": 100, "run_q": 90, "long_ride": 80, "long_run": 70}
+KEY_WEIGHT = {"ftp_test": 105, "bike_q": 100, "run_test": 95, "run_q": 90, "long_ride": 80, "long_run": 70}
+# Tests: an FTP test every 6 weeks (targets switch to eFTP after 8, core/metrics.py), a run test
+# (30 min all-out -> threshold HR, which sets the run zones) every 8; both in place of that
+# week's quality session, never in a deload week or within 2 weeks of an illness (a test at
+# the dip would set every target too low).
+FTP_TEST_EVERY_DAYS = 42
+RUN_TEST_EVERY_DAYS = 56
+TEST_AFTER_ILLNESS_DAYS = 14
+RUN_TEST_NAME = re.compile(r"\brun(ning)? test\b|\b5 ?k(m)?\b.*\b(tt|time trial)\b|\blthr test\b"
+                           r"|\b30 ?min(ute)?s? (run )?test\b", re.IGNORECASE)
+# Long-run progression: ~10% over the longest run of the last 30 days (single-run spikes are the
+# injury risk, core/injury_checks.check_run_spikes), between these bounds.
+LONG_RUN_GROWTH = 1.10
+LONG_RUN_BOUNDS = (45, 120)
 SECOND_BIKE_Q_WEIGHT = 60   # a second bike quality session ranks below one quality session per sport
 QUALITY_PHASES = {"Build", "Race prep"}
 TITLES = {"bike_q": "Bike quality", "long_ride": "Long ride", "ride": "Easy ride", "run_q": "Quality run",
           "long_run": "Long run", "run": "Easy run", "gym_legs": "Gym - heavy legs", "gym_upper": "Gym - upper body + core",
-          "gym_core": "Gym - core + mobility"}
+          "gym_core": "Gym - core + mobility", "ftp_test": "FTP test", "run_test": "Run test"}
 
 
 # --- what the week asks for and what's done ---
@@ -72,14 +88,32 @@ def _done(start: date, end: date) -> list[dict]:
     """Training between start and end (local days): kind, day and whether it was hard."""
     rows = query("""
         SELECT (start_time AT TIME ZONE %s)::date AS day, type, name, moving_time_sec,
-               raw_payload->'icu_zone_times' AS pz, raw_payload->'icu_hr_zone_times' AS hz
+               raw_payload->'icu_zone_times' AS pz, raw_payload->'icu_hr_zone_times' AS hz,
+               raw_payload->>'paired_event_id' AS paired, raw_payload->>'compliance' AS compliance
         FROM activities WHERE superseded_by IS NULL
           AND (start_time AT TIME ZONE %s)::date BETWEEN %s AND %s ORDER BY start_time;
     """, (str(TZ), str(TZ), start, end))
+    from core import workouts   # lazy: core.workouts imports this module
+    events = workouts.pushed_events()
     out = []
     for r in rows:
         mins = (r["moving_time_sec"] or 0) / 60
-        if r["type"] in RUN_TYPES:
+        planned = workouts.match(r["paired"], r["compliance"], events) if r["paired"] else None
+        if planned and planned["completed"] and SPORT[planned["kind"]] == _sport(r["type"]):
+            # Done as planned (>= 80% compliance): it counts as the planned session even when
+            # the zone times alone wouldn't classify it that way (HR lag on short reps, a long
+            # ride a few minutes short).
+            item = {"day": r["day"], "kind": planned["kind"], "name": r["name"], "minutes": round(mins),
+                    "compliance": planned["compliance"]}
+            if planned["kind"] == "bike_q" and "VO2" in (planned.get("name") or ""):
+                item["flavor"] = "vo2"
+            out.append(item)
+            continue
+        if r["type"] in RUN_TYPES and RUN_TEST_NAME.search(r["name"] or ""):
+            k = "run_test"
+        elif r["type"] in RIDE_TYPES and FTP_TEST_NAME.search(r["name"] or ""):
+            k = "ftp_test"
+        elif r["type"] in RUN_TYPES:
             k = {"quality": "run_q", "long": "long_run", "easy": "run"}[run_kind(r["hz"], r["moving_time_sec"])]
         elif r["type"] in RIDE_TYPES:
             c = classify(r["type"], r["pz"], r["hz"])
@@ -95,6 +129,14 @@ def _done(start: date, end: date) -> list[dict]:
     return out
 
 
+def _sport(activity_type: str) -> str | None:
+    if activity_type in RUN_TYPES:
+        return "run"
+    if activity_type in RIDE_TYPES:
+        return "ride"
+    return "gym" if activity_type in WEIGHTS_TYPES else None
+
+
 def _todo(monday: date, done: list[dict]) -> tuple[dict, list[str]]:
     """(week info, sessions still to do this week, most important first)."""
     kind, block = _week_kind(monday)
@@ -105,7 +147,8 @@ def _todo(monday: date, done: list[dict]) -> tuple[dict, list[str]]:
     info = {"kind": kind, "phase": phase, "deload": deload, "focus": block["primary_focus"],
             "mix": {k: v for k, v in s.items() if v},
             "vo2_left": max(0, s.get("vo2", 0) - sum(1 for d in done if d.get("flavor") == "vo2"))}
-    n = {k: sum(1 for d in done if d["kind"] == k) for k in TITLES}
+    as_quality = {"ftp_test": "bike_q", "run_test": "run_q"}   # a test is that week's quality session
+    n = {k: sum(1 for d in done if as_quality.get(d["kind"], d["kind"]) == k) for k in TITLES}
     rides_left = max(0, s.get("endurance", 0) + s.get("sst", 0) + s.get("vo2", 0)
                      - n["bike_q"] - n["long_ride"] - n["ride"])
     runs_left = max(0, s.get("run", 0) - n["run_q"] - n["long_run"] - n["run"])
@@ -273,6 +316,21 @@ def _layout(days: list[dict], todo: list[str], hard_before: set[date], no_hard: 
     return dropped
 
 
+def _test_due(test: str, on: date, t: dict, info: dict, level: str, run_limit: str, avail: dict,
+              days: list[dict]) -> bool:
+    """Is the FTP / run test due in the week containing `on` (and not already planned earlier)?"""
+    if info.get("deload") or level != "green" or any(test in d["sessions"] for d in days):
+        return False
+    if test == "run_test" and run_limit != "none":
+        return False
+    ill = availability.last_illness_end(on, avail)
+    if ill and (on - ill).days < TEST_AFTER_ILLNESS_DAYS:
+        return False
+    last = t.get("last_ftp_test" if test == "ftp_test" else "last_run_test")
+    every = FTP_TEST_EVERY_DAYS if test == "ftp_test" else RUN_TEST_EVERY_DAYS
+    return last is None or (on + timedelta(days=6 - on.weekday()) - last).days >= every
+
+
 # --- concrete targets ---
 
 def _targets() -> dict:
@@ -288,7 +346,32 @@ def _targets() -> dict:
                     WHERE superseded_by IS NULL AND type IN ('Run', 'TrailRun') AND raw_payload ? 'icu_hr_zones'
                     ORDER BY start_time DESC LIMIT 1;""")
     hr = rows[0]["z"] if rows and rows[0]["z"] else [141, 149, 157, 166]
-    return {"ftp": float(ftp) if ftp else None, "hr": [int(x) for x in hr[:4]]}
+    names = query("""SELECT type, name, (start_time AT TIME ZONE %s)::date AS day, moving_time_sec FROM activities
+                     WHERE superseded_by IS NULL AND type IN ('Ride', 'VirtualRide', 'Run', 'TrailRun')
+                       AND start_time > now() - interval '400 days' ORDER BY start_time DESC;""", (str(TZ),))
+    last_ftp = next((r["day"] for r in names if r["type"] in RIDE_TYPES and FTP_TEST_NAME.search(r["name"] or "")), None)
+    last_run = next((r["day"] for r in names if r["type"] in RUN_TYPES and RUN_TEST_NAME.search(r["name"] or "")), None)
+    recent = [r["moving_time_sec"] / 60 for r in names if r["type"] in RUN_TYPES and r["moving_time_sec"]
+              and r["day"] >= _today() - timedelta(days=30)]
+    try:
+        from core import gym_log
+        lifts = {"lower": gym_log.prescription(True), "upper": gym_log.prescription(False)}
+    except Exception as e:
+        logger.warning(f"Gym log unavailable: {e}")
+        lifts = {}
+    return {"ftp": float(ftp) if ftp else None, "hr": [int(x) for x in hr[:4]],
+            "last_ftp_test": last_ftp, "last_run_test": last_run, "longest_run_min": max(recent) if recent else None,
+            "lifts": lifts}
+
+
+def long_run_minutes(longest: float | None, deload: bool) -> str:
+    """The long run: ~10% over the longest run of the last 30 days (75% of it in a deload week)."""
+    if not longest:
+        return "45-50 min" if deload else "60-75 min"
+    lo, hi = LONG_RUN_BOUNDS
+    target = longest * (0.75 if deload else LONG_RUN_GROWTH)
+    m = int(min(max(target, lo), hi) // 5 * 5)
+    return f"{m}-{m + 5} min"
 
 
 def _w(t: dict, lo: float, hi: float) -> str:
@@ -344,10 +427,18 @@ def _describe(kind: str, info: dict, t: dict, day: dict, first_ride: bool, first
         else:
             main = f"Threshold 3x8 min at {t['hr'][2] + 1}-{t['hr'][3]} bpm, 2 min jog between"
         return f"{main}; 10 min easy warm-up with strides, 8 min cool-down (~45-50 min)"
+    if kind == "ftp_test":
+        return ("FTP test (20 min): 20 min warm-up with 3x1 min fast pedalling, 5 min hard, 10 min easy, then "
+                "20 min all-out, evenly paced (start at about your FTP and build); 10 min cool-down. "
+                "FTP = 95% of the 20-min power. Name the activity 'FTP test'")
+    if kind == "run_test":
+        return ("Run test (30 min): 15 min easy with 4 strides, then 30 min solo all-out, evenly paced - the average "
+                "HR of the last 20 min is your threshold HR (set it as LTHR in Intervals.icu); 10 min easy "
+                "cool-down. Name the activity 'Run test'")
     if kind == "long_run":
         if run_limit == "easy_short":
             return f"Easy run 30 min, HR under {easy_hr} (running is limited)"
-        mins = "45-50 min" if deload else "60-75 min"
+        mins = long_run_minutes(t.get("longest_run_min"), deload)
         return f"{_cap(mins, day)} easy, HR under {easy_hr}, conversational"
     if kind == "run":
         mins = "30 min" if run_limit == "easy_short" else "35-45 min"
@@ -356,10 +447,14 @@ def _describe(kind: str, info: dict, t: dict, day: dict, first_ride: bool, first
     if kind == "gym_legs":
         if deload:
             return "Light full body 30 min, 2 sets, nothing heavy"
-        return ("Squat or trap-bar deadlift + split squat or lunge + calf raises, 3-4 sets of 4-8 reps "
+        base = ("Squat or trap-bar deadlift + split squat or lunge + calf raises, 3-4 sets of 4-8 reps "
                 "(2 reps in reserve), 40-45 min - after the quality session, ideally 6+ h later")
+        lifts = (t.get("lifts") or {}).get("lower")
+        return f"{base}. {lifts}" if lifts else base
     if kind == "gym_upper":
-        return "Upper body + core 30-40 min, moderate (2-3 reps in reserve)"
+        lifts = (t.get("lifts") or {}).get("upper")
+        base = "Upper body + core 30-40 min, moderate (2-3 reps in reserve)"
+        return f"{base}. {lifts}" if lifts else base
     return "Core + mobility 20-30 min"
 
 
@@ -410,6 +505,7 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
             if day["sessions"][-1] in HARD:
                 hard_before.add(day["date"])
 
+    t = _targets()
     weeks, dropped = [], []
     for monday in sorted({d["date"] - timedelta(days=d["date"].weekday()) for d in days}):
         seg = [d for d in days if monday <= d["date"] < monday + timedelta(days=7)]
@@ -424,12 +520,17 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
                     todo.remove(hit)
         if run_limit != "none":
             todo = ["run" if k == "run_q" else k for k in todo]
+        for test, quality in (("ftp_test", "bike_q"), ("run_test", "run_q")):
+            # Only on a green start: a test needs fresh legs (amber/red this week waits for the next).
+            week_level = level if monday == this_monday else "green"
+            if quality in todo and _test_due(test, max(monday, today), t, info, week_level, run_limit, avail, days):
+                todo[todo.index(quality)] = test
+                break   # one test a week: the other one waits for the next week
         dropped += [(monday, k) for k in _layout(seg, todo, hard_before, no_hard)]
         hard_before |= {d["date"] for d in seg if any(s in HARD for s in d["sessions"])}
         info["monday"] = monday
         weeks.append(info)
 
-    t = _targets()
     out_days, seen = [], set()
     for day in days[:DAYS]:
         monday = day["date"] - timedelta(days=day["date"].weekday())
@@ -463,6 +564,8 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
         "readiness": level,
         "running_limit": run_limit,
         "done_today": [f"{TITLES[d['kind']]} ({d['name']})" for d in done_today],
+        "planned_done": [{"date": d["day"].isoformat(), "session": TITLES[d["kind"]], "compliance": d["compliance"]}
+                         for d in done_week if d.get("compliance") is not None],
         "weeks": [{"monday": w["monday"].isoformat(), "phase": w.get("phase"), "deload": w.get("deload"),
                    "mix": w.get("mix")} for w in weeks],
         "days": out_days,
@@ -492,6 +595,9 @@ def summary(plan: dict | None = None) -> str:
             lines.append(f"{head}{limit}: " + " + ".join(parts))
     if plan["dropped"]:
         lines.append("Dropped (no room this week): " + ", ".join(x["session"] for x in plan["dropped"]))
+    if plan.get("planned_done"):
+        lines.append("Pushed workouts done this week (Intervals.icu compliance): " + ", ".join(
+            f"{x['date']} {x['session']} {x['compliance']:.0f}%" for x in plan["planned_done"]))
     return "\n".join(lines)
 
 

@@ -108,7 +108,8 @@ def load_activity(external_id: str) -> dict | None:
                raw_payload->'icu_zone_times' AS power_zones, raw_payload->'icu_hr_zone_times' AS hr_zones,
                raw_payload->'interval_summary' AS interval_summary, raw_payload->'icu_achievements' AS achievements,
                raw_payload->>'icu_joules' AS joules,
-               COALESCE(raw_payload->>'average_weather_temp', raw_payload->>'average_temp') AS temp_c
+               COALESCE(raw_payload->>'average_weather_temp', raw_payload->>'average_temp') AS temp_c,
+               raw_payload->>'paired_event_id' AS paired_event_id, raw_payload->>'compliance' AS compliance
         FROM activities WHERE external_id = %s AND superseded_by IS NULL;
     """, (external_id,))
     return rows[0] if rows else None
@@ -164,6 +165,11 @@ def build_facts(a: dict) -> tuple[str, str]:
     if day in by_day and (day - timedelta(days=1)) in by_day:
         lines.append(f"📈 Fitness {by_day[day - timedelta(days=1)]:.1f} → {by_day[day]:.1f}")
 
+    planned = _pushed_workout(a)
+    if planned and planned["compliance"] is not None:
+        lines.append(f"📋 Plan: {re.sub(r' [(]AI coach[)]$', '', planned['name'] or '')} · "
+                     f"{planned['compliance']:.0f}% done")
+
     for ach in (a["achievements"] or [])[:2] if isinstance(a["achievements"], list) else []:
         if ach.get("message"):
             lines.append(f"🏆 {ach['message']}")
@@ -189,10 +195,28 @@ def _readiness() -> str:
         return "unknown"
 
 
+def _pushed_workout(a: dict) -> dict | None:
+    """The workout pushed to Intervals.icu that this activity was paired with (core/workouts.py)."""
+    if not a.get("paired_event_id"):
+        return None
+    try:
+        from core import workouts
+        return workouts.match(a["paired_event_id"], a.get("compliance"))
+    except Exception as e:
+        logger.warning(f"Pushed workout lookup failed: {e}")
+        return None
+
+
 def planned_for(a: dict) -> str | None:
-    """What was planned for activity `a`: the session pinned to its day, else the next session the
-    coach had decided after the previous activity (the one standing when the athlete trained)."""
+    """What was planned for activity `a`: the workout pushed to Intervals.icu it was paired with
+    (with the compliance), else the session pinned to its day, else the next session the coach had
+    decided after the previous activity (the one standing when the athlete trained)."""
     from core import availability  # lazy: keeps this module light for the dashboard import
+    pushed = _pushed_workout(a)
+    if pushed:   # the exact workout on Intervals.icu, and how much of it was done
+        done = f" Intervals.icu compliance: {pushed['compliance']:.0f}%." if pushed["compliance"] is not None else ""
+        return (f"{pushed['name']} (pushed to the watch). Steps:\n{pushed['description']}\n{done}"
+                " Under 80% means the planned session wasn't completed - say so honestly, with humour.")
     day = a["start_time"].astimezone(LOCAL_TZ).date()
     try:
         pin = availability.planned_session(day, include_past=True)

@@ -1,13 +1,20 @@
 import type { Activity, ChatMessage, ChatModel, SessionProposal, FocusMode, InjuryReport, NextSession, Overview, PlanWeek, PmcPoint, StravaNoteStatus, TrainingFocus, Usage, WeekAhead, WorkoutDay, WeekPoint, WellnessPoint } from "./types";
 
+/** Not logged in (core/web_auth.py): go to the login page. */
+function checkLogin(res: Response) {
+  if (res.status === 401) location.href = "/login";
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path);
+  checkLogin(res);
   if (!res.ok) throw new Error(`${path}: ${res.status} ${res.statusText}`);
   return res.json() as Promise<T>;
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  checkLogin(res);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((data as { detail?: string }).detail ?? `${res.status} ${res.statusText}`);
   return data as T;

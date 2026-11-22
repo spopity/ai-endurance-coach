@@ -1,10 +1,13 @@
 """
 The athlete's own feedback, collected by the Telegram bot in a few taps:
 
-- after each HARD ride or run (is_hard()): RPE (1-10) and how the legs feel (session_feedback),
+- after each hard ride or run, long ride or run, and gym session (asks_rpe()): RPE (1-10) and
+  how the legs feel (session_feedback). The RPE is also written to the activity on Intervals.icu
+  (icu_rpe), where it gives the session an RPE x minutes load (session_rpe) - the only load a
+  gym session really has, as its heart-rate load is near zero,
 - every morning after the briefing: body (fresh / normal / sore / very sore / ill) and
-  motivation (daily_checkin) - this also covers yesterday's gym, easy and endurance
-  sessions, which get no question of their own.
+  motivation (daily_checkin) - this also covers yesterday's easy sessions, which get no
+  question of their own.
 
 It feeds the readiness verdict (signals()), the coach's context (context()) and, for
 "ill", the availability file. Numbers come from taps, never from the model.
@@ -65,6 +68,18 @@ def is_hard(a: dict) -> bool:
     return False
 
 
+def asks_rpe(a: dict) -> bool:
+    """Hard sessions, the long ride / long run and gym get their own RPE question."""
+    from core.gym import WEIGHTS_TYPES
+    from core.plan import LONG_RIDE_MIN, LONG_RUN_MIN, RIDE_TYPES, RUN_TYPES
+    minutes = (a.get("moving_time_sec") or 0) / 60
+    if a["type"] in WEIGHTS_TYPES:
+        return True
+    if a["type"] in RIDE_TYPES and minutes >= LONG_RIDE_MIN or a["type"] in RUN_TYPES and minutes >= LONG_RUN_MIN:
+        return True
+    return is_hard(a)
+
+
 def _recent_unasked(since: datetime, until: datetime | None = None) -> list[dict]:
     return query("""
         SELECT a.external_id, a.name, a.type, a.start_time, a.moving_time_sec, a.training_load, a.race,
@@ -77,23 +92,42 @@ def _recent_unasked(since: datetime, until: datetime | None = None) -> list[dict
 
 
 def sessions_to_ask() -> list[dict]:
-    """Recent HARD rides/runs not asked about yet, oldest first. Easy ones, gym and others are
-    left to the next morning's check-in."""
-    return [a for a in _recent_unasked(datetime.now(timezone.utc) - timedelta(hours=ASK_WITHIN_HOURS)) if is_hard(a)]
+    """Recent hard, long and gym sessions not asked about yet, oldest first. Easy ones are left to
+    the next morning's check-in."""
+    return [a for a in _recent_unasked(datetime.now(timezone.utc) - timedelta(hours=ASK_WITHIN_HOURS)) if asks_rpe(a)]
 
 
 def checkin_sessions(day_start: datetime, day_end: datetime) -> list[dict]:
     """The day's sessions that got no question of their own - named in the morning check-in."""
-    return [a for a in _recent_unasked(day_start, day_end) if not is_hard(a)]
+    return [a for a in _recent_unasked(day_start, day_end) if not asks_rpe(a)]
 
 
 def mark_asked(external_id: str):
     _execute("INSERT INTO session_feedback (external_id) VALUES (%s) ON CONFLICT DO NOTHING;", (external_id,))
 
 
+def push_rpe(external_id: str, rpe: int) -> bool:
+    """Writes the RPE to the activity on Intervals.icu (icu_rpe); best effort."""
+    import requests
+    from core.db import load_env
+    env = load_env()
+    try:
+        resp = requests.put(f"https://intervals.icu/api/v1/activity/{external_id}", json={"icu_rpe": int(rpe)},
+                            auth=("API_KEY", env["INTERVALS_API_KEY"]), timeout=20)
+        if resp.status_code >= 300:
+            logger.warning(f"RPE not saved on Intervals.icu for {external_id}: {resp.status_code} {resp.text[:120]}")
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"RPE not saved on Intervals.icu for {external_id}: {e}")
+        return False
+
+
 def save_session(external_id: str, rpe: int | None = None, legs: str | None = None):
     if legs is not None and legs not in LEGS:
         raise ValueError(f"Unknown legs value {legs!r}")
+    if rpe is not None:
+        push_rpe(external_id, rpe)
     _execute("""
         INSERT INTO session_feedback (external_id, rpe, legs, answered_at) VALUES (%s, %s, %s, now())
         ON CONFLICT (external_id) DO UPDATE SET rpe = COALESCE(EXCLUDED.rpe, session_feedback.rpe),
@@ -162,11 +196,36 @@ def signals(today: date | None = None) -> tuple[list[str], list[str]]:
     return red, amber
 
 
+def gym_load(days: int = 14) -> list[dict]:
+    """Gym sessions of the last `days` days with their RPE and session load (RPE x minutes)."""
+    from core.gym import WEIGHTS_TYPES
+    rows = query("""
+        SELECT a.start_time, a.name, a.moving_time_sec, COALESCE(f.rpe, (a.raw_payload->>'icu_rpe')::int) AS rpe
+        FROM activities a LEFT JOIN session_feedback f ON f.external_id = a.external_id
+        WHERE a.superseded_by IS NULL AND a.type = ANY(%s) AND a.start_time >= now() - %s * interval '1 day'
+        ORDER BY a.start_time DESC;
+    """, (list(WEIGHTS_TYPES), days))
+    return [{"date": f"{r['start_time']:%Y-%m-%d}", "name": r["name"], "minutes": round((r["moving_time_sec"] or 0) / 60),
+             "rpe": r["rpe"], "session_load": r["rpe"] * round((r["moving_time_sec"] or 0) / 60) if r["rpe"] else None}
+            for r in rows]
+
+
+def _lifts() -> list[dict]:
+    try:
+        from core import gym_log
+        return gym_log.recent()
+    except Exception as e:
+        logger.warning(f"Gym log unavailable: {e}")
+        return []
+
+
 def context(today: date | None = None) -> dict:
-    """For the coach: this morning's check-in and the last sessions' RPE / legs."""
+    """For the coach: this morning's check-in, the last sessions' RPE / legs and the gym load."""
     today = today or date.today()
     c = today_checkin(today)
     return {
+        "gym_last_14_days": gym_load(),
+        "lifts_logged_last_14_days": _lifts(),
         "morning_checkin": ({"body": BODY.get(c["body"]), "motivation": MOTIVATION.get(c["motivation"])} if c else None),
         "recent_sessions": [{"activity": f"{r['type']} '{r['name']}' {r['start_time']:%Y-%m-%d}", "kind": r["kind"],
                              "rpe": r["rpe"], "legs": LEGS.get(r["legs"])} for r in recent_sessions()],

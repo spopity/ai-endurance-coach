@@ -1,0 +1,20 @@
+[Unit]
+Description=AI Coach v1 - hourly health check (service errors, credits/logins, backup age, Garmin data, failed units)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=coach
+Group=coach
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/ai-coach-v1/state /opt/ai-coach-v1/logs /var/lib/coach
+Type=oneshot
+WorkingDirectory=/opt/ai-coach-v1
+ExecStart=/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/scripts/check_health.py --notify
+StandardOutput=journal
+StandardError=journal
+SuccessExitStatus=1

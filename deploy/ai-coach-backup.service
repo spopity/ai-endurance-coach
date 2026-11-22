@@ -1,0 +1,19 @@
+[Unit]
+Description=AI Coach v1 - nightly encrypted backup (database + state/) to /var/backups/ai-coach
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=coach
+Group=coach
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/backups/ai-coach /opt/ai-coach-v1/logs
+Type=oneshot
+WorkingDirectory=/opt/ai-coach-v1
+ExecStart=/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/scripts/backup.py --notify
+StandardOutput=journal
+StandardError=journal

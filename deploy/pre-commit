@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runs the test suite before every commit (install: cp deploy/pre-commit .git/hooks/ && chmod +x .git/hooks/pre-commit).
+cd "$(git rev-parse --show-toplevel)" || exit 1
+venv/bin/python -m pytest -q tests >/tmp/ai-coach-pytest.log 2>&1 || { tail -30 /tmp/ai-coach-pytest.log; echo "Tests failed - commit aborted."; exit 1; }

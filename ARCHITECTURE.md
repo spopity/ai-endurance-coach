@@ -369,6 +369,20 @@ every sync.
   "trim ~20% + warm-up test" on the hard session. Running limits turn quality runs easy.
 - **Targets:** watts from the training FTP, heart rates from the last run's HR zones, and
   sets/reps by week kind (e.g. sweet spot 3x12 → 3x15, VO2max 5x3 → 5x4).
+- **Tests** replace that week's quality session:
+  - an FTP test (20 min) when the last ride named like one is 6+ weeks old;
+  - a run test (30 min all-out, whose last-20-min HR is the threshold HR) every 8 weeks.
+
+  Never in a deload week, on an amber/red week, within 14 days of an illness or (the run
+  test) under a running limit; one test a week. Both are recognised afterwards by the
+  activity name (`FTP_TEST_NAME`, `RUN_TEST_NAME`).
+- **Long-run progression:** the long run is ~10% over the longest run of the last 30 days
+  (75% of it in a deload week), between 45 and 120 min. Single-run spikes are the injury
+  risk (§4.4).
+- **Planned vs done:** a session pushed to Intervals.icu (§4.6c) and done with ≥ 80%
+  Intervals.icu compliance counts as that session, whatever the zone times say. Under 80%
+  it counts as whatever the zones show, so an unfinished quality session stays to do.
+  The week's compliances are in the plan (`planned_done`) and the coach's summary.
 - **Where it's used:** `week_ahead` in the coach's context (rule 19: the next session is
   its first day), the local coach's plan summary, the dashboard (`/api/week-ahead`,
   `WeekAheadCard`) and Telegram `/week`.
@@ -397,6 +411,12 @@ text, and goes onto the Intervals.icu calendar **only when the athlete taps Push
   A result that fails stays plain text, like a "Zwift race". Conversions are cached in
   `state/workouts/pinned.json`, and a failure is retried after an hour. The preview shows
   the athlete's text above the steps.
+- **Planned vs done:** Intervals.icu pairs each activity with the planned workout of its
+  day and reports a compliance % (`paired_event_id`, `compliance`). `workouts.match()` finds
+  the pushed workout behind an activity:
+  - the 7-day plan counts ≥ 80% as done (§4.6b);
+  - the Strava note shows "📋 Plan: <workout> · N% done", and the comment compares the steps
+    with what was done.
 - **Readiness and time:** amber drops one rep of the main set and adds the warm-up test. A
   "max N min" day shortens the warm-up and cool-down first, then drops reps.
 - **Push:** `POST /api/v1/athlete/{id}/events` with category `WORKOUT` and `external_id`
@@ -502,9 +522,10 @@ service flow chart, busy hours, per-component token table, and the latest calls.
     with last night's sleep/HRV, then computed facts plus that shared decision.
   - **Chat** (with 3 h conversation memory), `/twin`, `/claude`, `/gemini`, `/local`, `/strava`, `/briefing`,
     `/week` (the 7-day plan, §4.6b), `/workout` (structured workouts with Push to
-    Intervals.icu, §4.6c, also sent every morning after the check-in), `/sync`, `/reset`.
-  - **Feedback** (§4.11): RPE and legs after each new session (checked every 10 min,
-    not between 22:00 and 07:00), and a check-in (body, motivation) after the briefing.
+    Intervals.icu, §4.6c, also sent every morning after the check-in), `/gym` (log lifts,
+    §4.11), `/sync`, `/reset`.
+  - **Feedback** (§4.11): RPE and legs after each hard, long or gym session (checked every
+    10 min, not between 22:00 and 07:00), and a check-in (body, motivation) after the briefing.
   - Only user ids listed in `TELEGRAM_ALLOWED_USER_IDS` get answers.
 
 ### 4.11 FTP, feedback and availability (`core/metrics.py`, `core/feedback.py`, `core/availability.py`)
@@ -518,10 +539,26 @@ service flow chart, busy hours, per-component token table, and the latest calls.
   and race planner.
 - **Feedback** (tables `session_feedback`, `daily_checkin`, migration 016 - kept apart
   from `activities.rpe/feel`, which Intervals.icu overwrites): Telegram buttons only,
-  so no number comes from a model. RPE and legs are asked **only after hard rides and
-  runs** (`feedback.is_hard()`: rides classified sweet spot / VO2, runs with 10+ min in
-  HR Z4+ or 25+ min in Z3+, FTP tests, races); gym, easy and endurance sessions are covered by the
-  next morning's check-in, which names them. It feeds readiness (§4.3) and
+  so no number comes from a model. RPE and legs are asked after **hard, long and gym
+  sessions** (`feedback.asks_rpe()`):
+  - hard means `is_hard()`: rides classified sweet spot / VO2, runs with 10+ min in HR Z4+ or
+    25+ min in Z3+, FTP tests, races;
+  - long means a ride of 110+ min or a run of 60+ min.
+
+  Easy sessions are covered by the next morning's check-in, which names them. The RPE is also
+  written to the activity on Intervals.icu (`icu_rpe`), where it gives the session an RPE ×
+  minutes load (`session_rpe`). That is the only real load of a gym session, whose
+  heart-rate load is near zero; the coach sees it as `gym_last_14_days`.
+- **Gym log** (`core/gym_log.py`, table `gym_sets`, migration 017): `/gym squat 80x5x3,
+  rdl 60x8x3, pull-up bwx8x3` (kg × reps × sets, `bw` = bodyweight) stores the main lifts.
+  The plan's gym sessions then prescribe the next step from the last log of each exercise
+  (6 weeks back at most):
+  - +2.5 kg for lower-body lifts and +1 kg for upper-body lifts, when that session was RPE 8
+    or below (or not rated);
+  - the same weight after RPE 9-10;
+  - one more rep for bodyweight exercises.
+
+  After a gym session's legs answer the bot shows the `/gym` format. It feeds readiness (§4.3) and
   `athlete_feedback` in the coach's context. An answer that changes things (ill, very
   sore, sore legs) re-plans and sends the updated next session; "Ill" also saves a sick day.
 - **Availability** (`state/availability.json`): the coach's `record_availability` /
@@ -553,8 +590,10 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
+| `tests/` | pytest suite (73 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
-| `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router | The main web process and the target of the 30-min sync cron |
+| `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |
 | `dashboard_api.py` | The `/api/*` JSON endpoints: overview, PMC, wellness, weekly load, plan, focus get/set, next session, activities, Strava-note preview/post, injury report, races, usage (System page), chat, sync | Everything the dashboard shows or does goes through here |
 | `graph.py` | The LangGraph workflow: preprocessor (metrics + readiness + next session), local-model supervisor router, agent nodes, local/cloud switch | The brain: decides which agent answers and what context it gets |
 | `telegram_bot.py` | The Telegram bot: access control, chat with memory, `/twin`, `/claude`/`/gemini`/`/local` model choice, `/strava` preview/post buttons, `/briefing`, `/sync`, `/reset`, the daily briefing job, session-feedback and check-in buttons | The mobile front-end, the daily push message and the athlete's feedback |
@@ -594,6 +633,8 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `plan.py` | Session classification (endurance/SST/VO2/run/weights; runs as quality/long/easy), planned vs done per week, plan summary for prompts (with the 7-day plan) | The plan card and the coach's view of "what's left this week" |
 | `push.py` | Push experiments: time-boxed load above the plan, the ceiling from a CTL ramp and the benchmark years, a daily check against readiness and the injury checks, a result per push | Lets the athlete try more without changing the plan |
 | `focus.py` | Cycling vs dual-sport focus: goals, running rule, session-mix and focus-text adjustments, saved in `athlete_settings` | Switches the whole coaching doctrine for winter |
+| `gym_log.py` | Parses `/gym` lift logs into `gym_sets` and prescribes the next weights (double progression from the last session's RPE) | Makes the gym progressive instead of "some gym" |
+| `web_auth.py` | Dashboard login: `DASHBOARD_TOKEN` entered once at `/login`, kept as an HttpOnly cookie; local calls and the PWA files stay open | A second lock behind the firewall and Tailscale |
 | `gym.py` | `gym_focus()`: a gym session counts as leg work only if its title names legs | Stops upper-body/core sessions from limiting bike/run work |
 | `simulators.py` | CTL/ATL/TSB forward projection (Intervals.icu model); cycling physics for speed and time on climbs/segments | Numbers for the Twin and the race planner |
 | `race_planner.py` | Deterministic race plan (course, pacing, fuelling, caffeine, taper, race week) and post-race review | Racing agent output; the dashboard race card |
@@ -639,6 +680,8 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `sync_strava_names.py` | Matches Strava (last 6 months, `--full` for all) to local activities and pushes Strava names to Intervals.icu and the database | Run by the nightly name timer |
 | `backfill_strava_history.py` | One-time: uploads Strava-only activities to Intervals.icu (TCX from streams), links double recordings, re-imports the DB; re-runnable, report in `state/strava_backfill_report.txt` | Run once by hand (2026-10-11) |
 | `check_intervals_sync.py` | Reconciliation of activities and wellness over the last 15 days (`--days N`, `--full`), `--fix`, `--notify` | Run by the nightly sync-check timer |
+| `backup.py` | Nightly encrypted backup: `pg_dump` (custom format) and `state/`, AES-256 with `BACKUP_PASSPHRASE`, each verified by decrypting and reading it back, into `/var/backups/ai-coach` (14 daily + 8 weekly); restore steps in its docstring | Data survives losing the container or the database |
+| `check_health.py` | Hourly: any service with 3+ failures making half its calls in 3 h, any credits/billing/login error, a backup older than 30 h, no Garmin HRV for 2 days, a failed ai-coach unit; Telegram on new problems and on recovery | Fallbacks no longer hide outages (e.g. Gemini credits running out) |
 | `check_intervals_api.py` | One-request API health probe; alerts only on a state change | Run by the 15-min health timer |
 
 ### `db/migrations/`: schema history (applied in order)
@@ -661,6 +704,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `014_readonly_role.sql` | The `coach_reader` role: SELECT on `activities`, `daily_metrics`, `training_blocks`, `athlete_profile` only; read-only, 15 s timeout |
 | `015_garmin_health.sql` | Garmin health columns on `daily_metrics` (sleep stages/timing, HRV status and baseline, stress, Body Battery, respiration, SpO2, daily activity, Fitness Age, `garmin_payload`) |
 | `016_athlete_feedback.sql` | `session_feedback` (RPE, legs per activity) and `daily_checkin` (body, motivation per day), readable by `coach_reader` |
+| `017_gym_sets.sql` | `gym_sets`: logged lifts (exercise, kg, reps, sets) per day, linked to that day's gym activity |
 
 ### `deploy/`: systemd units (copied to `/etc/systemd/system/`)
 
@@ -670,6 +714,10 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `ai-coach-telegram.service` | `telegram_bot.py` (a separate process, so a bot crash never takes down the web UI) |
 | `ai-coach-strava-notes.service` / `.timer` | `post_strava_notes.py` every 10 min |
 | `ai-coach-intervals-health.service` / `.timer` | `check_intervals_api.py --notify` every 15 min |
+| `ai-coach-backup.service` / `.timer` | Nightly at 02:45: `scripts/backup.py --notify` (writes only `/var/backups/ai-coach` and `logs/`) |
+| `ai-coach-health.service` / `.timer` | Hourly at :07: `scripts/check_health.py --notify` |
+| `logrotate-ai-coach` | Copied to `/etc/logrotate.d/ai-coach`: weekly rotation for the logs of short-lived jobs (`intervals_health`, `health`, `backup`) and `sync-cron.log`, which Python's own daily rotation never rotates |
+| `pre-commit` | Git hook: runs `pytest tests` before every commit (`cp deploy/pre-commit .git/hooks/`) |
 | `ai-coach-sync-check.service` / `.timer` | Nightly at 03:30: `import_garmin.py --days 15` (a failure doesn't stop the next step), then `check_intervals_sync.py --fix --notify` (last 15 days) |
 | `ai-coach-strava-names.service` / `.timer` | `sync_strava_names.py --notify` nightly at 04:15 |
 
@@ -716,9 +764,10 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `.env` | Real secrets and settings (see `.env.example`) |
 | `credentials.json`, `token.json` | Google Calendar OAuth (life agent) |
 | `state/strava_tokens.json`, `state/withings_tokens.json` | OAuth tokens written by the auth scripts and refreshed by the app |
-| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `workouts/pinned.json` (pinned sessions converted to steps), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
+| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `workouts/pinned.json` (pinned sessions converted to steps), `health_alerts.json` (open problems of the hourly health check), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
 | `logs/` | Rotating logs for each process, plus `sync-cron.log` |
 | `venv/` | The Python virtualenv |
+| `/var/backups/ai-coach/` | Encrypted nightly backups (`db-*.dump.enc`, `state-*.tar.gz.enc`), coach-only (0600) |
 | `web/node_modules/`, `web/dist/` | Frontend dependencies and the built dashboard (rebuild with `cd web && npm install && npm run build`) |
 
 ---
@@ -738,4 +787,11 @@ venv/bin/python scripts/create_database.py
 venv/bin/python scripts/check_intervals_sync.py          # last 15 days; --full for everything
 # re-import Garmin health data by hand (the nightly job covers the last 15 days)
 venv/bin/python ingest/import_garmin.py --days 30
+# tests (no database or API needed; also run by the pre-commit hook)
+venv/bin/python -m pytest -q tests
+# backup now / health check now
+sudo systemctl start ai-coach-backup.service ai-coach-health.service
+# dependency audit (every few months; pip-audit in its own venv, not the app's)
+python3 -m venv /tmp/audit && /tmp/audit/bin/pip install -q pip-audit && \
+  PIPAPI_PYTHON_LOCATION=$PWD/venv/bin/python /tmp/audit/bin/pip-audit -l
 ```

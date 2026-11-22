@@ -10,10 +10,12 @@ from fastapi.staticfiles import StaticFiles
 from logging_config import setup_logging
 from core.chat import SYNC_WINDOW_DAYS, run_sync, stream_reply
 from dashboard_api import router as dashboard_router
+from core import web_auth
 
 logger = logging.getLogger("AI_COACH_V1.app")
 app = FastAPI(title="Athlete Multi-Agent Core Platform (v1)")
 app.include_router(dashboard_router)
+web_auth.install(app)  # login (DASHBOARD_TOKEN) in front of everything but local calls
 
 # The dashboard is a React app built into web/dist (cd web && npm run build).
 # The original single-page chat UI stays available at /classic.

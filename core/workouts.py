@@ -22,6 +22,11 @@ Workout text (Intervals.icu workout builder syntax):
   shortens warm-up/cool-down first, then drops reps; red readiness is already short and easy
   in the plan.
 
+Planned vs done: Intervals.icu pairs each activity with the planned workout of its day and
+reports a compliance %. `match()` finds the pushed workout behind an activity; the 7-day plan
+counts a session at >= 80% compliance as done (core/schedule._done), and the Strava note shows
+the planned workout and the compliance.
+
 The state lives in state/workouts/<date>.json: per session the last pushed text, the event id
 on Intervals and the status (draft / pushed / skipped). The workout is rebuilt from the plan on
 every read; when the plan's prescription changed since the push, `changed` is set and Push
@@ -123,6 +128,13 @@ def _steady(minutes: int, target: str, wu_target: str, max_min: int | None, cue:
 
 def _ride_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | None) -> tuple[str, list]:
     k, detail = s["kind"], s["detail"]
+    if k == "ftp_test":
+        return ("FTP test 20 min", [
+            ("Warmup", 1, [(600, "Ramp 50-70% 90rpm", "")]),
+            ("Openers", 3, [(60, "100% 110rpm", "Fast pedalling"), (60, "50%", "Easy")]),
+            ("Blow-out", 1, [(300, "105-110%", "Hard"), (600, "50%", "Easy")]),
+            ("Test", 1, [(1200, "95-110%", "All-out 20 min, even pacing - start at FTP and build")]),
+            ("Cooldown", 1, [(600, "50%", "")])])
     if k == "bike_q":
         args = dict(wu_target="Ramp 50-75% 90rpm", cd_target="50%", amber=amber, max_min=max_min)
         if detail.startswith("VO2max"):
@@ -163,6 +175,12 @@ def _ride_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | Non
 
 def _run_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | None) -> tuple[str, list]:
     k, detail = s["kind"], s["detail"]
+    if k == "run_test":
+        return ("Run test 30 min", [
+            ("Warmup", 1, [(900, "Z2 HR", "Easy")]),
+            ("Strides", 4, [(20, "Z5 HR", "Stride"), (40, "Z1 HR", "Walk/jog")]),
+            ("Test", 1, [(1800, "Z4 HR", "All-out 30 min, even pace - lap at 10 min")]),
+            ("Cooldown", 1, [(600, "Z1 HR", "")])])
     if k == "run_q" and not detail.startswith("Easy run"):
         strides = ("Strides", 4, [(20, "Z5 HR", "Stride"), (40, "Z1 HR", "Walk/jog")])
         args = dict(wu_target="Z2 HR", cd_target="Z1 HR", amber=amber, max_min=max_min)
@@ -178,7 +196,8 @@ def _run_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | None
         return name, b[:1] + [strides] + b[1:]
     m = re.match(r"(?:Easy run )?(\d+)", detail)
     if k == "long_run" and not detail.startswith("Easy run"):
-        mins = 45 if deload else 65
+        m = re.match(r"(\d+)(?:-(\d+))? min", detail)
+        mins = (int(m.group(1)) + int(m.group(2) or m.group(1))) // 2 if m else (45 if deload else 65)
         return f"Long run {mins} min easy", _steady(mins, "Z2 HR", "Z1 HR", max_min, "Conversational")
     mins = int(m.group(1)) if m else 40
     mins = 40 if mins == 35 else mins          # "35-45 min" -> 40
@@ -549,6 +568,54 @@ def act(d: str | None, kind: str, action: str) -> dict:
     if not fn:
         raise WorkoutError(f"Unknown action {action!r}.")
     return fn(d, kind)
+
+
+# --- planned vs done: Intervals.icu pairs an activity with the planned workout of its day ---
+
+COMPLETED_PCT = 80   # compliance at or above this counts the planned session as done
+
+
+def pushed_events() -> dict:
+    """{Intervals event id: {date, kind, name, description}} for every workout pushed and kept
+    (the last KEEP_DAYS days)."""
+    out = {}
+    try:
+        names = os.listdir(STATE_DIR)
+    except FileNotFoundError:
+        return out
+    for n in names:
+        if not re.match(r"\d{4}-\d{2}-\d{2}\.json$", n):
+            continue
+        try:
+            with open(os.path.join(STATE_DIR, n)) as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            continue
+        for kind, w in state.get("workouts", {}).items():
+            if w.get("event_id") and w.get("status") == "pushed":
+                out[int(w["event_id"])] = {"date": state["date"], "kind": kind, "name": w.get("name"),
+                                           "description": w.get("description")}
+    return out
+
+
+def pct(compliance) -> float | None:
+    """Intervals.icu compliance as a percentage."""
+    try:
+        return round(float(compliance), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def match(paired_event_id, compliance, events: dict | None = None) -> dict | None:
+    """The pushed workout an activity was paired with, plus its compliance %, or None."""
+    try:
+        ev = (events if events is not None else pushed_events()).get(int(paired_event_id))
+    except (TypeError, ValueError):
+        return None
+    if not ev:
+        return None
+    c = pct(compliance)
+    return {**ev, "compliance": c, "completed": c is not None and c >= COMPLETED_PCT}
 
 
 def telegram_text(day: dict, w: dict) -> str:

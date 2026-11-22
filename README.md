@@ -18,9 +18,12 @@ You reach the coach in three ways:
 - **Structured workouts**: each morning the day's sessions become Intervals.icu workouts
   (power as % FTP, runs by HR zone). One tap on Push in Telegram or the dashboard puts a
   workout on your Intervals.icu calendar, and from there it syncs to Garmin or Zwift.
-  Nothing is pushed without that tap.
+  Nothing is pushed without that tap. Sessions you pin yourself are converted to steps too.
+  Intervals.icu's compliance % tells the plan whether a session was really done, an FTP
+  test (every 6 weeks) and a 30-min run test (every 8) are scheduled automatically, the
+  long run grows ~10% at a time, and gym weights progress from what you log (`/gym`).
 - **Telegram bot**: a morning briefing and check-in, a two-tap RPE/legs question after
-  each session, chat with memory, what-if simulations, and Strava note editing. Tell it
+  each hard, long or gym session (the RPE also goes to Intervals.icu), chat with memory, what-if simulations, and Strava note editing. Tell it
   "sick for 3 days", "only 40 min today" or "swap Tuesday's intervals with Thursday's
   long ride" and the plan works around those exact dates, then resumes by itself.
 - **Strava**: an optional short, funny coach note appended to each new activity's
@@ -182,6 +185,8 @@ Fill it in:
 | `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` | Optional, from your Strava API app (§4.2) |
 | `TELEGRAM_BOT_TOKEN` | Optional, from @BotFather |
 | `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated numeric Telegram user ids allowed to use the bot. Ask [@userinfobot](https://t.me/userinfobot) for yours. **Required if the bot runs**: it refuses to start without it. |
+| `DASHBOARD_TOKEN` | Dashboard login: a long random string (`python3 -c "import secrets; print(secrets.token_urlsafe(18))"`), entered once per browser at `/login`. Empty means no login (§8) |
+| `BACKUP_PASSPHRASE` | Encrypts the nightly backup (§6). Keep a copy somewhere else, or the backups can't be restored |
 
 Optional settings (commented out in `.env.example`):
 
@@ -197,6 +202,10 @@ Optional settings (commented out in `.env.example`):
 ```bash
 venv/bin/python scripts/create_database.py
 ```
+
+Tests (no database or API needed): `pip install -r requirements-dev.txt`, then
+`venv/bin/python -m pytest tests`. `deploy/pre-commit` runs them before every commit
+(`cp deploy/pre-commit .git/hooks/`).
 
 This creates the database named in `DATABASE_URL` and applies every migration in
 `db/migrations/` in order. It's safe to re-run: applied migrations are tracked in
@@ -316,7 +325,7 @@ Then set `LIFE_AGENT_ENABLED=true`.
 3. Run `venv/bin/python telegram_bot.py` (or the systemd unit, §6) and send `/start`.
 
 Commands: `/twin <what-if>`, `/claude` / `/gemini` (pick the chat model), `/local` (toggle Local only), `/strava [date] [context]`,
-`/briefing`, `/week` (the next 7 days), `/workout [date]` (structured workouts with Push to Intervals.icu), `/sync`, `/reset`. The bot uses long polling, so nothing needs to be exposed
+`/briefing`, `/week` (the next 7 days), `/workout [date]` (structured workouts with Push to Intervals.icu), `/gym squat 80x5x3, ...` (log lifts), `/sync`, `/reset`. The bot uses long polling, so nothing needs to be exposed
 to the internet.
 
 ### 4.6 Garmin (health data)
@@ -376,6 +385,8 @@ cd web && npm run dev     # Vite dev server; proxies /api to localhost:8000
 | `ai-coach-sync-check.timer` | Nightly at 03:30: the last 15 days from Garmin and from Intervals.icu (imports anything the regular sync missed) |
 | `ai-coach-plan.timer` | Nightly adaptive-plan update, 04:00 |
 | `ai-coach-strava-names.timer` | Nightly Strava → Intervals.icu name sync, 04:15 |
+| `ai-coach-backup.timer` | Nightly at 02:45: encrypted, verified backup of the database and `state/` to `/var/backups/ai-coach` (14 daily + 8 weekly kept) |
+| `ai-coach-health.timer` | Hourly: Telegram alert when a service keeps failing, credits or a login run out, the backup is stale, Garmin data stops or a unit fails |
 
 The services run as an unprivileged system user `coach`, sandboxed so that they can
 only write `state/` and `logs/`. Create it and hand it those folders and read access to
@@ -399,6 +410,10 @@ sudo cp deploy/*.service deploy/*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now ai-coach-v1 ai-coach-telegram
 sudo systemctl enable --now ai-coach-intervals-health.timer ai-coach-sync-check.timer ai-coach-plan.timer
+sudo apt install postgresql-client-16   # pg_dump for the backup
+sudo mkdir -p /var/backups/ai-coach && sudo chown coach:coach /var/backups/ai-coach && sudo chmod 750 /var/backups/ai-coach
+sudo systemctl enable --now ai-coach-backup.timer ai-coach-health.timer
+sudo cp deploy/logrotate-ai-coach /etc/logrotate.d/ai-coach   # logs of the short-lived jobs
 # only if you set up Strava:
 sudo systemctl enable --now ai-coach-strava-notes.timer ai-coach-strava-names.timer
 ```
@@ -471,11 +486,11 @@ seeded by `db/migrations/001_init_schema.sql`. The first sync replaces them.
 
 ## 8. Security and privacy
 
-- **The dashboard and API have no login.** Anyone who can reach port 8000 can read
-  your health data, chat with the agents (which spends your Gemini credit) and post to
-  your Strava. Keep it on your home network or behind a VPN such as Tailscale or
-  WireGuard. If you must expose it, put it behind a reverse proxy with authentication.
-  Everything lives under `/api`, plus `/`, `/chat`, `/stream_chat` and `/sync-data`.
+- **Dashboard login.** With `DASHBOARD_TOKEN` set, every page and API call needs the
+  token once per browser (`/login`, then a long-lived HttpOnly cookie); scripts can send
+  `Authorization: Bearer <token>`. Calls from the machine itself (the sync cron) stay
+  open. It is one shared token over plain HTTP, so still keep the dashboard on your home
+  network or behind a VPN such as Tailscale or WireGuard; for anything wider, use HTTPS.
 - **Telegram:** only the user ids in `TELEGRAM_ALLOWED_USER_IDS` get answers, and the
   bot refuses to start without that list.
 - **Strava notes are public.** Strava descriptions are visible to anyone who can see

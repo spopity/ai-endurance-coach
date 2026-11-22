@@ -12,6 +12,7 @@ restart never takes the web UI down with it.
 import asyncio
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import date, datetime, time as dtime, timedelta
@@ -78,10 +79,12 @@ HELP_TEXT = (
     "Tell me when you can't train (\"sick for 3 days\", \"away until Sunday\", \"only 40 min today\") - "
     "I save the exact dates and plan around them; normal training resumes by itself afterwards. "
     "Moving or swapping sessions between days works the same way (\"long ride Thursday instead of Tuesday\").\n"
-    "After each hard ride or run I ask for RPE and how your legs feel; easy sessions and gym are covered by the "
-    "quick morning check-in.\n"
+    "After each hard or long ride or run and each gym session I ask for RPE and how your legs feel (the RPE also "
+    "goes to Intervals.icu); easy sessions are covered by the quick morning check-in.\n"
     "/workout [YYYY-MM-DD] - today's workouts as structured files; Push puts one on your Intervals.icu "
     "calendar (it syncs on to Garmin/Zwift from there). They also arrive every morning after the briefing\n"
+    "/gym squat 80x5x3, rdl 60x8x3 - log the main lifts (kg x reps x sets, bw = bodyweight); the plan "
+    "progresses the weights from them\n"
     "/reset - start a fresh conversation\n"
     "/sync - pull the latest activities + wellness from Intervals.icu\n"
     "/help - show this message"
@@ -513,6 +516,8 @@ async def on_feedback_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.edit_message_text(f"{query.message.text.splitlines()[0]}\n"
                                           f"{query.message.text.splitlines()[-1].split(' - ')[0]}, legs "
                                           f"{feedback.LEGS[value].lower()} ✓ Thanks!")
+            if re.search(r"\((WeightTraining|Workout),", query.message.text.splitlines()[0]):
+                await context.bot.send_message(chat_id, GYM_HINT)
             _, amber = await asyncio.to_thread(feedback.signals)
             if any("last hard session" in r for r in amber):
                 await replan_and_send(context.bot, chat_id, "That session took more out of you than planned")
@@ -539,6 +544,40 @@ async def on_feedback_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         logger.error("Feedback button failed", exc_info=True)
         await context.bot.send_message(chat_id, f"❌ Couldn't save that: {e}")
+
+
+GYM_HINT = ("🏋️ Log the main lifts so next time's weights progress: /gym squat 80x5x3, rdl 60x8x3, "
+            "pull-up bwx8x3  (kg x reps x sets, bw = bodyweight)")
+
+
+async def cmd_gym(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/gym [YYYY-MM-DD] squat 80x5x3, rdl 60x8x3 - logs lifts (core/gym_log.py)."""
+    from core import gym_log
+    text = update.effective_message.text.partition(" ")[2].strip()
+    day = _local_today()
+    m = re.match(r"(\d{4}-\d{2}-\d{2})\s+(.*)", text, re.S)
+    if m:
+        day, text = date.fromisoformat(m.group(1)), m.group(2)
+    if not text:
+        await update.effective_message.reply_text(GYM_HINT)
+        return
+    items, bad = gym_log.parse(text)
+    if not items:
+        await update.effective_message.reply_text("I couldn't read that. " + GYM_HINT)
+        return
+    try:
+        eid = await asyncio.to_thread(gym_log.save, day, items)
+    except Exception as e:
+        logger.error("Saving gym log failed", exc_info=True)
+        await update.effective_message.reply_text(f"❌ Couldn't save: {e}")
+        return
+    lines = [f"✅ Logged for {day:%a %d %b}" + ("" if eid else " (no gym activity synced for that day yet)") + ":"]
+    lines += [f"- {gym_log.fmt(i)}" for i in items]
+    if bad:
+        lines.append("Skipped (couldn't read): " + "; ".join(bad))
+    lines.append("Next time: " + "; ".join(gym_log.next_step(i, None) for i in items)
+                 + " - repeat the weight instead if this felt RPE 9-10.")
+    await update.effective_message.reply_text("\n".join(lines))
 
 
 async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -642,6 +681,7 @@ async def post_init(application: Application):
         BotCommand("week", "The next 7 days of training"),
         BotCommand("briefing", "Today's briefing now"),
         BotCommand("workout", "Today's workouts - push to Intervals.icu"),
+        BotCommand("gym", "Log lifts: squat 80x5x3, rdl 60x8x3"),
         BotCommand("twin", "Ask the Athlete Twin a what-if directly"),
         BotCommand("local", "Toggle Local only (home GPU instead of Gemini)"),
         BotCommand("claude", "Answer with Claude (default)"),
@@ -686,6 +726,7 @@ def main():
     application.add_handler(CommandHandler("briefing", cmd_briefing, filters=allowed))
     application.add_handler(CommandHandler("week", cmd_week, filters=allowed))
     application.add_handler(CommandHandler("workout", cmd_workout, filters=allowed))
+    application.add_handler(CommandHandler("gym", cmd_gym, filters=allowed))
     application.add_handler(CallbackQueryHandler(on_workout_button, pattern=r"^wo:"))
     application.add_handler(MessageHandler(allowed & filters.TEXT & ~filters.COMMAND, on_message))
     application.add_handler(MessageHandler(~allowed, on_unauthorized))

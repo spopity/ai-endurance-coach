@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly encrypted backup for AI Coach v1
+
+[Timer]
+# Early in the night, before the 03:30 sync check.
+OnCalendar=*-*-* 02:45:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
