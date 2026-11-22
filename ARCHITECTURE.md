@@ -33,7 +33,7 @@ lists **every file in the project** with what it does and how it affects the who
 | What | How it runs | Purpose |
 |---|---|---|
 | `app.py` | systemd `ai-coach-v1.service` (port 8000) | FastAPI: dashboard, JSON API, chat streaming, `/sync-data` |
-| `telegram_bot.py` | systemd `ai-coach-telegram.service` | Morning briefing and check-in, session feedback, chat, `/strava` note editor |
+| `telegram_bot.py` | systemd `ai-coach-telegram.service` | Morning briefing and check-in, session feedback, chat, `/week`, `/strava` note editor |
 | Data sync | host crontab, every 30 min: `POST /sync-data` | Pulls the last 5 days of activities and fitness from Intervals.icu and health data from Garmin |
 | Strava notes | `ai-coach-strava-notes.timer`, every 10 min | Writes a coach note into each new activity's Strava description |
 | Intervals.icu health | `ai-coach-intervals-health.timer`, every 15 min | Sends a Telegram alert when the API goes down or recovers |
@@ -188,15 +188,20 @@ Its prompt holds a ranked rulebook. In short:
 - **Graded return to training** (`return_to_training`, computed by
   `core/periodization.return_status()`): 3–6 days off → a normal endurance session,
   then back to the plan; 7–13 → 2 easy sessions, then the plan at ~75% for that week;
-  14+ → 3 easy sessions, then the (stepped-back) plan. Poor sleep (score < 70 or under
-  6.5 h, `SLEEP_MIN_HOURS`) means rest or easy.
+  14+ → 3 easy sessions, then the (stepped-back) plan. One poor night (score < 70 or under
+  6.5 h, `SLEEP_MIN_HOURS`) keeps the planned session with a warm-up test; 2+ poor nights in a
+  row (or under 5 h) is a recovery signal in readiness.
 - **Periodization:** follow the current training block's focus and weekly load range.
   A deload week never contains intervals. Base allows a weekly VO2 touch or sprints
   (under 10 min hard, inside an endurance ride); full VO2max sessions are Build-only.
   When the week runs short (`sessions_remaining` vs `days_left_this_week`), keep the key
   sessions (quality + long) and drop filler; never cram missed load.
-- **Readiness overrides the plan:** red means rest or easy only, amber means no VO2max
-  (not even the Base touches), green means the full plan.
+- **Readiness adjusts the plan:** red means rest or easy only; amber keeps the planned
+  session, quality included, ~20% shorter with a warm-up test (15 min easy + the first
+  interval: normal HR and legs → carry on, otherwise half the reps or endurance); green is
+  the full plan. `readiness.running` limits running only, so the hard work moves to the bike.
+- **The 7-day plan** (`week_ahead`, §4.6b): the next session is its first day, unless
+  readiness, feedback or the athlete's request says otherwise.
 - The injury-risk tool must be called before prescribing anything hard.
 - **Push experiments** (§4.7b) may raise the week's top load to `push.week_ceiling`; they never change the plan.
 - Stick to the already-decided next session unless something new justifies a change.
@@ -205,17 +210,26 @@ Its prompt holds a ranked rulebook. In short:
 
 ### 4.3 Readiness (`core/readiness.py`)
 
-A green/amber/red traffic light built from four signals:
+A green/amber/red traffic light. Since 2026-11-22 single signals **adjust** the session
+instead of cancelling it (what coaches do on "meh" days):
 
-- **Form (TSB):** −20 or below is amber, −30 or below is red.
-- **7-day HRV versus baseline:** "below" is amber, "low" is red.
-- **The injury check's overall level:** caution is amber, high is red.
-- **The athlete's own feedback** (`core/feedback.signals()`, §4.11): ill (check-in or a
-  sick day in the availability file) is red; very sore, sore + low motivation, or sore legs
-  after the last hard session are amber.
+- **green:** the full plan.
+- **amber:** the planned session stays, quality included, ~20% shorter, with a warm-up test.
+- **red:** rest or easy only. It needs a hard stop or a cluster:
+  - hard stops: ill (check-in or a sick day), TSB −30 or below, 7-day HRV "low", a HIGH
+    non-running injury finding;
+  - a cluster: 2+ **recovery** signals at once (7-day HRV "below", 2+ poor nights in a row
+    or one under 5 h, a Recovery or Subjective caution such as resting HR up, the
+    athlete's own amber feedback: very sore, sore + low motivation, sore legs after the last
+    hard session).
+- Load cautions (TSB −20, ACWR, monotony...) and single recovery signals are amber.
+- One poor night is only a note (`sleep.note`): keep the session, start with the warm-up test.
+- **Running findings never set the level.** `running_limit()` turns them into
+  `running.limit`: `no_hard_run` (caution: easy runs, no extra running) or `easy_short`
+  (high: easy runs of at most 30 min, or a ride instead).
 
-The briefing, the coach's context, the local coach and (privately) the Strava notes all
-use the same verdict.
+The briefing, the coach's context, the local coach, push experiments, the 7-day plan and
+(privately, for tone) the Strava notes all use the same verdict.
 
 ### 4.4 Injury and overreaching checks (`core/injury_checks.py`)
 
@@ -226,7 +240,13 @@ Each check is judged against **the athlete's own baselines**, not textbook const
 - **Cardio drift:** decoupling on steady rides, efficiency-factor trend.
 - **Biomechanics:** cadence versus usual for that ride type, L/R balance.
 - **Subjective:** feel/RPE versus objective data.
-- **Running:** volume progression.
+- **Running:** volume progression and single-run spikes. A run is compared with the
+  longest run of the 30 days before it, but never with less than 8 km
+  (`RUN_SPIKE_FLOOR_KM`), so short recent runs don't make a normal run a "spike".
+- **During a comeback** (`core/periodization.comeback`, CTL under 50) the ACWR thresholds
+  widen from 1.3/1.5 to 1.7/2.0: at a low CTL the plan's own ramp puts ATL at ~1.5× CTL.
+  The ramp-rate check and the recovery signals still watch the absolute progression.
+- A single-night HRV dip is `info` (warm-up test), not a caution.
 
 The result is a structured report with severities (high/caution/ok/info). The injury
 agent narrates it, the coach calls it as a tool, and the dashboard renders it.
@@ -281,6 +301,9 @@ disagree. Rules:
     that holds fitness) is a loading week; a missed week counts as rest.
   - Targets come from the current CTL: ~7×CTL holds fitness, plus a CTL ramp of
     2/week in Base and 3/week in Build; recovery weeks are 50-70% of 7×CTL.
+  - **Comeback** (`comeback()`, from 2026-11-23): while CTL is under 50, loading weeks ramp
+    at +5 CTL/week, capped at the athlete's top weeks (p90) at that CTL in 2022-24, and never
+    below the normal ramp. Earlier weeks keep the targets they were judged by.
   - Future weeks are a projection assuming completion (this week: actual load so far
     plus the days left; deloads every 3 loading weeks, since future HRV is unknown).
     `notes` says why each week has its phase (shown on the plan card and given to the
@@ -303,12 +326,52 @@ disagree. Rules:
 - **Training focus** (dashboard toggle):
   - `cycling`: FTP first, running is maintenance.
   - `dual`: the winter block, with bike and run both primary.
-  The dual setting is applied when the plan is *read* (one more run, one ride and one
-  gym session fewer), so switching back restores the stored plan exactly.
+  The dual setting is applied when the plan is *read*, so switching back restores the
+  stored plan exactly. It replaces the session mix with 2-3 runs, 3-4 rides and 2-3 gym
+  sessions (`adjust_sessions`): loading weeks get 4 rides, 3 runs and 2 gym sessions (3 in
+  Base), deloads get 3 rides, 2 runs and 2 gym sessions. The bike quality sessions from the
+  cycling plan stay, capped at 2, so a week never holds more than 3 hard sessions
+  including the quality run. Race and taper weeks keep their own mix. The coach's dual
+  rule (`running_rule`) describes how to lay out the week: hard days hard and easy days
+  easy, heavy leg gym on a hard day after the quality session, the long ride and long run
+  at the weekend, and progressing one variable at a time.
 - **Gym sessions:** the athlete titles each gym session after the muscles worked.
   `core/gym.gym_focus()` marks a session as leg work only if the title says so ("legs",
   "lower body", "full body", "squat", "deadlift", "lunge"). Anything else is treated as
   upper body/core with no effect on leg freshness.
+
+### 4.6b The rolling 7-day plan (`core/schedule.py`)
+
+What to do on each of the next 7 days, laid out in code (no LLM). It is **stateless**:
+every read re-derives the week from what was actually done, so it adapts by itself after
+every sync.
+
+- **Input:** the week's session mix (`week_block`, with the dual focus applied), the
+  sessions done this week (classified: bike quality, long ride ≥ 110 min, easy ride;
+  quality run = 15+ min in HR Z3 or above, long run ≥ 60 min, easy run; leg / other gym),
+  the availability file (days off, limited days, pinned sessions), and readiness.
+- **What's still to do:** planned minus done. A skipped session is still to do and moves
+  to another day. A hard session cut short counts when it reached the quality threshold;
+  otherwise it stays to do.
+- **Layout:** pinned sessions take their day. Then the key sessions (bike quality, run
+  quality, long ride, long run; a second bike quality ranks below one quality session per
+  sport) are placed by trying every assignment:
+  - hard sessions never on consecutive days, nor the day after yesterday's hard one;
+  - long sessions prefer the weekend and need a day with enough time;
+  - a limited day only takes what fits.
+  Easy sessions fill the remaining days, alternating sports. Heavy legs gym goes on a hard
+  day; other gym on easy days.
+- **When days run out,** the filler is dropped (easy rides, easy runs, the third gym
+  session) and listed in `dropped`. Nothing is doubled up.
+- **The last week in the window is laid out in full,** so its long sessions still find
+  the weekend; only 7 days are shown.
+- **Day 1 follows readiness:** red means nothing hard and at most 45 min; amber notes
+  "trim ~20% + warm-up test" on the hard session. Running limits turn quality runs easy.
+- **Targets:** watts from the training FTP, heart rates from the last run's HR zones, and
+  sets/reps by week kind (e.g. sweet spot 3x12 → 3x15, VO2max 5x3 → 5x4).
+- **Where it's used:** `week_ahead` in the coach's context (rule 19: the next session is
+  its first day), the local coach's plan summary, the dashboard (`/api/week-ahead`,
+  `WeekAheadCard`) and Telegram `/week`.
 
 ### 4.7 Strava coach notes (`core/strava_notes.py`)
 
@@ -316,11 +379,17 @@ Every 10 minutes the timer looks for activities of **any type** that are at leas
 20 min long, less than 2 days old, at least 15 min past import, and not yet noted.
 
 - **Text:** a facts block computed in code (session type, intervals, duration/distance,
-  NP/IF or pace, TSS, kJ, temperature, fitness change, achievements), plus 2–3 Gemini
-  sentences that end with the shared next session.
+  NP/IF or pace, TSS, kJ, temperature, fitness change, achievements), plus 2–3 funny
+  Gemini sentences that compare what was done with what was planned and say what the
+  session did for the body. They never say what comes next (that is on the dashboard and
+  Telegram), but the timer still triggers the next-session decision.
+- **What was planned** (`planned_for`): the session pinned to that day, else the next
+  session that stood when the day started (decided after the last activity of an earlier
+  day). Walks and hikes have no plan (a "bonus outing"). Other sessions of the same day are
+  passed along so a ride + gym day isn't called "skipped".
 - **Privacy:** Strava descriptions are public, so the notes never mention HRV, sleep,
-  readiness, injuries, weight or FTP tests. Readiness and the coach's reasons are passed
-  to the model privately, only to steer the tone.
+  readiness, injuries, weight or FTP tests. Readiness is passed to the model privately,
+  only to steer the tone.
 - **Description handling:** the note is appended below the athlete's own text. A
   re-post replaces only the previous note. `#nocoach` in the description skips the
   activity.
@@ -336,13 +405,15 @@ gets `push` in its context (rule 18).
 
 - `start_push` / `stop_push` are chat tools, saved in `athlete_settings` (key `push`). A push
   lasts up to 14 days (7 by default) and ends by itself.
-- **The ceiling** is the load for a CTL ramp of 4/week (level 1) or 5/week (level 2), never above the
+- **The ceiling** is the load for a CTL ramp of 4/week (level 1) or 5/week (level 2) - 6 and 7 during a
+  comeback, when the plan itself already ramps at 5 (`push.comeback`) - never above the
   90th percentile of what the athlete did at this CTL in the benchmark years (`BENCHMARK_YEARS`),
   scaled for days off and never below the plan's own maximum.
-- **Checked every day.** Off, with reasons in `blocked_because`, on a form/HRV/feedback verdict that
-  isn't green, a HIGH injury finding, a caution about load, recovery, biomechanics or how sessions
-  felt, in a recovery/taper/race week, or while coming back from illness or a break. A running caution only sets
-  `no_extra_running`. Intensity also needs a Build or race-prep week and no cautions at all.
+- **Checked every day.** Off, with reasons in `blocked_because`, only on hard stops: a red verdict, a HIGH
+  injury finding, illness, a recovery/taper/race week, or while easing back in after a break. An amber
+  verdict or a caution about load, recovery, biomechanics or how sessions felt keeps the extra volume and
+  only holds the extra intensity (`intensity_held_because`). A running caution only sets
+  `no_extra_running`. Intensity also needs a Build or race-prep week.
 - **Each push is judged when it ends:** `absorbed` (more load than the plan, no warning) opens level 2,
   `too_much` (warning, illness, or the athlete says so) goes back to level 1 after a 7-day cooldown,
   `no_extra` changes nothing, and a push stopped within 3 days doesn't count.
@@ -393,7 +464,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
   - **Morning briefing** at `BRIEFING_TIME`: syncs first, re-checks the next session
     with last night's sleep/HRV, then computed facts plus that shared decision.
   - **Chat** (with 3 h conversation memory), `/twin`, `/claude`, `/gemini`, `/local`, `/strava`, `/briefing`,
-    `/sync`, `/reset`.
+    `/week` (the 7-day plan, §4.6b), `/sync`, `/reset`.
   - **Feedback** (§4.11): RPE and legs after each new session (checked every 10 min,
     not between 22:00 and 07:00), and a check-in (body, motivation) after the briefing.
   - Only user ids listed in `TELEGRAM_ALLOWED_USER_IDS` get answers.
@@ -476,13 +547,13 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `history_stats.py` | Local calculators for the history analyst: wellness stats/series/period comparison, training volume and workout-type mix (steady vs variable by IF/VI), biggest CTL-gain windows, race detection + pacing | Every history number is computed here, not by the LLM |
 | `pacing.py` | Power fade/pacing per quarter from Intervals.icu watts streams (cached) | "Did my power hold to the end?" |
 | `overview.py` | The shared overview (form, HRV status, week load vs plan, next race), a small TTL cache, the read-only query helper | Keeps the dashboard and briefing numbers identical |
-| `readiness.py` | The green/amber/red verdict from TSB, the HRV trend, the injury level and the athlete's feedback | The single "can I train hard?" answer |
+| `readiness.py` | The green/amber/red verdict from TSB, the HRV trend, sleep, the injury findings and the athlete's feedback (single signals trim, clusters stop); the running limit | The single "can I train hard?" answer |
 | `injury_checks.py` | Deterministic risk checks (load, intensity distribution, recovery, drift, biomechanics, subjective, running) against personal baselines, plus text/Markdown renderers | Injury agent, coach tool, dashboard card, readiness input |
 | `feedback.py` | Session RPE/legs and the morning check-in: what to ask, saving taps, readiness signals, coach context | The athlete's own voice in readiness and the plan |
 | `availability.py` | `state/availability.json`: days off / limited days / planned sessions as exact dates, self-expiring into history; day status, unavailable days, last illness, coach context | Plans around sickness, travel and busy days, and resumes by itself |
 | `next_session.py` | Decides, stores and reads the one shared next-session decision; `refresh()` re-decides a stale one (24 h without an activity, every morning) | Keeps Strava, the dashboard, the briefing and chat consistent, and never lets a skipped session sit there |
 | `periodization.py` | Adaptive phase engine: replays closed weeks (completed/partial/missed), rolling Base→Build gate, CTL-drop step-back, form/HRV-timed deloads, CTL-based targets, projection; `hrv_trend()` and the graded `return_status()` | Decides what phase each week is and why, and how to come back after days off |
-| `plan.py` | Session classification (endurance/SST/VO2/run/weights), planned vs done per week, plan summary for prompts | The plan card and the coach's view of "what's left this week" |
+| `plan.py` | Session classification (endurance/SST/VO2/run/weights; runs as quality/long/easy), planned vs done per week, plan summary for prompts (with the 7-day plan) | The plan card and the coach's view of "what's left this week" |
 | `push.py` | Push experiments: time-boxed load above the plan, the ceiling from a CTL ramp and the benchmark years, a daily check against readiness and the injury checks, a result per push | Lets the athlete try more without changing the plan |
 | `focus.py` | Cycling vs dual-sport focus: goals, running rule, session-mix and focus-text adjustments, saved in `athlete_settings` | Switches the whole coaching doctrine for winter |
 | `gym.py` | `gym_focus()`: a gym session counts as leg work only if its title names legs | Stops upper-body/core sessions from limiting bike/run work |
@@ -498,7 +569,8 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `history.py` | Conversation memory: the last 6 messages, the format the supervisor sees | Makes follow-up questions work |
 | `briefing.py` | The morning briefing: computed facts (readiness, HRV, load vs plan, warnings, race countdown) plus the shared next-session decision, re-checked that morning | The daily Telegram message |
 | `strava.py` | A minimal Strava client: token refresh, list/get/update activities, scope check | Used by name sync and coach notes |
-| `strava_notes.py` | Builds, merges and posts Strava coach notes for every activity type (facts + Gemini comment + next session), with privacy rules and `#nocoach` | The public coach voice on Strava |
+| `schedule.py` | The rolling 7-day plan: lays out what's left of the week's session mix around availability, readiness and the hard/easy rules, with concrete targets | One day-by-day plan for the coach, dashboard and Telegram; adapts after every sync |
+| `strava_notes.py` | Builds, merges and posts Strava coach notes for every activity type (facts + a funny Gemini comment: planned vs done and the training benefit), with privacy rules and `#nocoach` | The public coach voice on Strava |
 | `notify.py` | Sends a plain Telegram message from scripts and timers | Alerts from the health check, sync check and name sync |
 | `telegram_format.py` | Markdown → Telegram HTML conversion, splitting long messages | Correct formatting of bot messages |
 
@@ -585,6 +657,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `src/components/PmcChart.tsx` | CTL/ATL/TSB chart with a range toggle | Fitness trend |
 | `src/components/WellnessChart.tsx` | HRV, resting HR, sleep and overnight SpO2 chart against the baseline | Recovery trend |
 | `src/components/WeeklyChart.tsx` | Weekly load by sport against the plan target | Load versus plan |
+| `src/components/WeekAheadCard.tsx` | The next 7 days: sessions per day with targets, pinned and hard sessions marked, dropped filler | The day-by-day plan |
 | `src/components/PlanCard.tsx` | Upcoming weeks: phase, load range, planned vs done sessions, cycling/dual focus toggle | The training plan view and focus switch |
 | `src/components/InjuryCard.tsx` | Injury findings by severity, expandable, "ask about this" | Risk visibility |
 | `src/components/RaceCard.tsx` | Next race: countdown, course, weather, predicted time, goal | Race focus |

@@ -234,3 +234,36 @@ export interface Usage {
   recent: UsageCall[];
 }
 
+
+export type WeekSport = "ride" | "run" | "gym";
+
+export interface WeekSession {
+  kind: string;
+  sport: WeekSport;
+  title: string;
+  detail: string;
+  hard: boolean;
+  key: boolean;
+  pinned: boolean;
+  note: string | null;
+}
+
+export interface WeekDay {
+  date: string;
+  weekday: string;
+  status: string;
+  max_minutes: number | null;
+  sessions: WeekSession[];
+  rest: boolean;
+}
+
+export interface WeekAhead {
+  generated: string;
+  focus: FocusMode;
+  readiness: ReadinessLevel;
+  running_limit: string;
+  done_today: string[];
+  weeks: { monday: string; phase: string | null; deload: boolean | null; mix: Record<string, number> | null }[];
+  days: WeekDay[];
+  dropped: { week: string; session: string }[];
+}

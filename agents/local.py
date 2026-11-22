@@ -90,6 +90,8 @@ def _metrics(state) -> str:
     r = m.get("readiness")
     if r:
         lines.append(f"READINESS: {r['level'].upper()} - {r['verdict']}.")
+        if (r.get("running") or {}).get("rule"):
+            lines.append(f"RUNNING LIMIT: {r['running']['rule']}.")
     back = m.get("return_to_training")
     if back and back.get("stage") != "on_plan":
         lines.append(f"RETURN TO TRAINING ({back['stage'].replace('_', ' ')}): {back['guidance']}")
@@ -141,12 +143,15 @@ athlete. Be practical, specific and brief (under 200 words), in Markdown.
 
 Rules, in priority order:
 1. If the athlete asks for rest/easy/hard/short/long, follow that.
-2. READINESS RED, poor sleep (sleep_score < 70 or under {sleep_min_hours:g} h), or a HIGH finding in the
-   injury report: only rest or an easy Zone 1-2 session, no intervals. After days without training, follow the
-   RETURN TO TRAINING line in the context exactly. READINESS AMBER: no VO2max (not even short VO2 touches or
-   sprints), at most a controlled tempo or sweet spot session. CAUTION findings (such as HR drift) do NOT cancel the
-   intervals the plan calls for - mention them briefly and keep the plan's session.
-3. Follow this week's training plan: its focus, phase (deload week = no intervals), TSS target vs load so far, and
+2. READINESS RED or a HIGH (non-running) finding in the injury report: only rest or an easy Zone 1-2 session,
+   no intervals. After days without training, follow the RETURN TO TRAINING line in the context exactly.
+   READINESS AMBER: keep the planned session, quality included, about 20% shorter, starting with a warm-up test
+   (15 min easy + the first interval; back off if HR or legs feel off). ONE poor night (sleep_score < 70 or under
+   {sleep_min_hours:g} h) is the same: keep the session with the warm-up test. CAUTION findings (such as HR drift)
+   do NOT cancel the intervals the plan calls for - mention them briefly and keep the plan's session. Running
+   findings only limit running (easy runs) - the hard work moves to the bike.
+3. The next session is the FIRST day of "NEXT 7 DAYS" in the context, with its targets, unless rule 1 or 2
+   changes it. Follow this week's training plan: its focus, phase (deload week = no intervals), TSS target vs load so far, and
    the sessions still to do. If fewer days are left than sessions, keep the key ones (the quality session and the
    long ride/run) and drop extra easy rides and gym - never two hard days in a row, never cram missed load.
    If the next session falls in a new week, plan for THAT week. Weights can be on the same day as a ride; never hard leg work
@@ -169,10 +174,14 @@ saving a change needs Local only switched off, and never claim it is updated. Th
 it again, and meanwhile follow what they said.{run_rules}"""
 
 DUAL_RUN_RULES = """
-Dual-sport winter block - runs matter as much as rides:
+Dual-sport winter block - runs matter as much as rides. The week has 2-3 runs (never more), 3-4 rides, 2-3 gym:
 6. Pick run sessions from: Easy: 30-50 min conversational. Long run: 60-90 min easy. Tempo: 2x12 min at threshold
    heart rate, 3 min jog between. Hills: 8x60 s uphill hard, jog down. Quality runs get 10 min easy warm-up/cool-down.
-7. Never a hard run the day after a hard ride or a leg gym session ("legs worked") (or the reverse) - alternate hard bike and hard run days."""
+   In Base no tempo or hills - strides or short hill sprints inside an easy run at most.
+7. At most 3 hard sessions a week, never two hard days in a row: never a hard run the day after a hard ride or a leg
+   gym session ("legs worked") (or the reverse). Heavy leg gym goes on a hard day, after the quality session; other
+   gym on easy days. Typical week: Mon rest or easy spin + upper/core gym, Tue bike quality + legs gym, Wed easy run,
+   Thu easy ride, Fri quality run (Build) or easy run, Sat long ride, Sun long easy run."""
 
 
 def call_coach_local(state):

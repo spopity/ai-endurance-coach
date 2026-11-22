@@ -12,6 +12,7 @@ from core.metrics import load_athlete_metrics
 from core.next_session import latest_decision
 from core.push import status as push_status
 from core.readiness import readiness_context
+from core.schedule import build as build_schedule, summary as schedule_summary
 from core.history import split_state, format_for_supervisor
 from agents.ai_coach import call_ai_coach
 from agents.twin import call_twin
@@ -62,6 +63,10 @@ def global_preprocessor(state: AgentState):
             metrics[key] = fn()
         except Exception as e:
             logger.warning(f"Context '{key}' unavailable: {e}")
+    try:  # after readiness: day 1 of the plan follows it
+        metrics["week_ahead"] = schedule_summary(build_schedule(readiness=metrics.get("readiness"))).splitlines()
+    except Exception as e:
+        logger.warning(f"Context 'week_ahead' unavailable: {e}")
     return {"metrics_context": metrics}
 
 

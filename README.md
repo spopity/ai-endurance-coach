@@ -11,14 +11,16 @@ projections, race pacing) are computed in code; the LLMs only explain and priori
 You reach the coach in three ways:
 
 - **Web dashboard**, an installable PWA: fitness/fatigue/form chart, HRV and sleep,
-  weekly load against the plan, adaptive training plan, injury-risk card, next-race
+  weekly load against the plan, adaptive training plan, a rolling 7-day plan that re-plans
+  itself after every sync (a missed session moves, the filler drops), injury-risk card, next-race
   card with weather and pacing, activity list, a streaming chat, and a System page with
   API-call and Gemini cost tracking.
 - **Telegram bot**: a morning briefing and check-in, a two-tap RPE/legs question after
   each session, chat with memory, what-if simulations, and Strava note editing. Tell it
   "sick for 3 days", "only 40 min today" or "swap Tuesday's intervals with Thursday's
   long ride" and the plan works around those exact dates, then resumes by itself.
-- **Strava**: an optional short coach note appended to each new activity's description.
+- **Strava**: an optional short, funny coach note appended to each new activity's
+  description: what was done compared with what was planned, and what it did for you.
 
 > This is a personal project shared as a starter kit. It was built for one athlete on
 > a home server, so expect to read some code and adapt it to your own setup. See
@@ -85,8 +87,16 @@ everything uses Gemini.
 
 **Push experiments:** tell the coach you can do more and it may go above the plan for up to two
 weeks, without changing the plan. The ceiling comes from a safe fitness ramp and from what you did
-at this fitness in your best years (set `BENCHMARK_YEARS` in `core/push.py` to yours). It's rechecked
-daily against readiness and the injury checks, and each push gets a result that decides the next one.
+at this fitness in your best years (set `BENCHMARK_YEARS` in `core/push.py` and
+`core/periodization.py` to yours). It's rechecked daily: only hard stops (red readiness, a high
+injury finding, illness) switch it off; an amber day keeps the extra volume but not the extra
+intensity. Each push gets a result that decides the next one.
+
+**Readiness adjusts, it doesn't just cancel:** amber keeps the planned session, ~20% shorter and
+with a warm-up test; red (a hard stop or several recovery signals together) means easy or rest.
+Running warnings only limit running. **Comeback:** while fitness (CTL) is below `COMEBACK_CTL`,
+the plan ramps faster (`COMEBACK_RAMP`, from `COMEBACK_FROM` in `core/periodization.py`), capped
+at your own top weeks at that fitness.
 
 **Intervals.icu is the source of truth for training.** Activities, the fitness/fatigue
 model (CTL/ATL), FTP/LTHR and your race calendar all come from it, so you edit
@@ -302,7 +312,7 @@ Then set `LIFE_AGENT_ENABLED=true`.
 3. Run `venv/bin/python telegram_bot.py` (or the systemd unit, §6) and send `/start`.
 
 Commands: `/twin <what-if>`, `/claude` / `/gemini` (pick the chat model), `/local` (toggle Local only), `/strava [date] [context]`,
-`/briefing`, `/sync`, `/reset`. The bot uses long polling, so nothing needs to be exposed
+`/briefing`, `/week` (the next 7 days), `/sync`, `/reset`. The bot uses long polling, so nothing needs to be exposed
 to the internet.
 
 ### 4.6 Garmin (health data)

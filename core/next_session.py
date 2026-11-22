@@ -32,6 +32,7 @@ RECENT_ACTIVITY_HOURS = 36  # a Strava note still gets a next session for an act
 
 DECIDE_PROMPT = (
     'Decide my NEXT training session after my {type} "{name}" on {day} (activity {external_id}). '
+    "Take it from day 1 of `week_ahead` (the rolling 7-day plan) unless readiness or my feedback says otherwise. "
     "Follow all your rules, including readiness, `availability` and the injury check. " + "{answer}"
 )
 REDECIDE_PROMPT = (
@@ -39,7 +40,7 @@ REDECIDE_PROMPT = (
     "(activity {external_id}), {ago}. Use today's data: last night's sleep and HRV, readiness, my feedback "
     "(`athlete_feedback`), `availability` (never plan training on a day I can't train; stay within max_minutes on "
     "a limited day; a planned entry on the next training day is that day's session), `return_to_training`, and the sessions still to do this week "
-    "(`current_training_block.sessions_remaining`, `days_left_this_week`). If `next_session_decided` is still there, keep it unless something justifies a change. "
+    "(`current_training_block.sessions_remaining`, `days_left_this_week`) - `week_ahead` already lays them out, take day 1 from it. If `next_session_decided` is still there, keep it unless something justifies a change. "
     "Follow all your rules. " + "{answer}"
 )
 ANSWER_FORMAT = (

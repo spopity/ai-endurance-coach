@@ -28,6 +28,7 @@ NUM_CTX = 8192
 
 
 GEMINI_MODEL = "gemini-pro-latest"
+GEMINI_TIMEOUT_SEC = 180
 
 
 def local_llm(component: str, **kwargs) -> ChatOllama:
@@ -48,5 +49,7 @@ def gemini_llm(component: str, temperature: float) -> ChatGoogleGenerativeAI:
         model=GEMINI_MODEL,
         google_api_key=env.get("GEMINI_API_KEY"),
         temperature=temperature,
+        # A request that never returns (seen 2026-11-22) would otherwise block a timer or a chat forever.
+        timeout=GEMINI_TIMEOUT_SEC,
         callbacks=[UsageCallback("gemini", component)],
     )

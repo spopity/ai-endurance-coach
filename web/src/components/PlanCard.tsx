@@ -115,7 +115,7 @@ const FOCUS_OPTIONS: { label: string; value: FocusMode }[] = [
 
 const FOCUS_HINT: Record<FocusMode, string> = {
   cycling: "Coach builds FTP first; running is maintenance only.",
-  dual: "Winter block: bike and run are both primary. More runs, a bit less riding and gym.",
+  dual: "Winter block: bike and run are both primary. 2-3 runs, 3-4 rides, 2-3 gym a week.",
 };
 
 function FocusSwitch({ onChanged, refreshKey }: { onChanged: () => void; refreshKey: number }) {

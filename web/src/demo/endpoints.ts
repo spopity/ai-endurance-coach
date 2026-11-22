@@ -146,6 +146,30 @@ function plan(weeks: number): PlanWeek[] {
   });
 }
 
+// A plausible dual-sport week starting today (the real one is laid out by core/schedule.py).
+const DEMO_WEEK: [string, string, string, boolean][][] = [
+  [["ride", "Bike quality", "Sweet spot 3x12 min at 247-264 W, 5 min easy between (~75 min)", true], ["gym", "Gym - heavy legs", "Squat + split squat + calf raises, 3-4 x 4-8 reps", true]],
+  [["run", "Easy run", "35-45 min easy, HR under 149", false], ["gym", "Gym - upper body + core", "Upper body + core 30-40 min", false]],
+  [["run", "Quality run", "Tempo 2x12 min at 150-157 bpm, 3 min jog between (~45-50 min)", true]],
+  [["ride", "Easy ride", "60-75 min Zone 2 (157-211 W), 85-95 rpm", false]],
+  [],
+  [["ride", "Long ride", "2-2.5 h in Zone 2 (157-211 W), fuel 60 g carbs/h", false]],
+  [["run", "Long run", "60-75 min easy, HR under 149", false]],
+];
+
+function weekAhead() {
+  const today = TODAY;
+  const days = DEMO_WEEK.map((sessions, i) => {
+    const d = addDays(today, i);
+    return {
+      date: iso(d), weekday: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()], status: "available",
+      max_minutes: null, rest: sessions.length === 0,
+      sessions: sessions.map(([sport, title, detail, hard]) => ({ kind: title, sport, title, detail, hard, key: hard, pinned: false, note: null })),
+    };
+  });
+  return { generated: today.toISOString(), focus: state.focus.mode, readiness: "green", running_limit: "none", done_today: [], weeks: [], days, dropped: [] };
+}
+
 function nextSession(): NextSession {
   return { readiness: readiness(), decision: state.decision };
 }
@@ -277,6 +301,7 @@ export async function handle(method: string, url: URL, body: Record<string, unkn
     if (path === "/api/wellness") return DATA.days.slice(-num("days", 90)).map(({ day, hrv, resting_hr, sleep_h, sleep_score, weight_kg, spo2 }) => ({ day, hrv, resting_hr, sleep_h, sleep_score, weight_kg, spo2 }));
     if (path === "/api/weekly") return weekly(num("weeks", 12));
     if (path === "/api/plan") return plan(num("weeks", 8));
+    if (path === "/api/week-ahead") return weekAhead();
     if (path === "/api/next-session") return nextSession();
     if (path === "/api/focus") return { ...state.focus, options: { cycling: "Cycling focus", dual: "Dual-sport (bike + run)" } };
     if (path === "/api/activities") return DATA.activities.slice(0, num("limit", 20)).map(({ kind: _k, day: _d, interval: _i, strava_note: _n, ...a }) => a);

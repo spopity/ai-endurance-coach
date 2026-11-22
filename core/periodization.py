@@ -73,6 +73,13 @@ RACE_PHASES = {"race_a": "Race", "race_b": "Race", "taper": "Taper", "specific":
 # Planned CTL rise per week; weekly TSS to get it is ~ 7*CTL + 45*ramp
 # (Banister, 42-day CTL: one week of constant daily load L moves CTL by ~0.154*(L - CTL)).
 RAMP = {"Base": 2.0, "Build": 3.0}
+# Comeback: fitness the athlete has had before comes back faster than new fitness is built
+# (2022-24 CTL averaged 55-71). While CTL is below COMEBACK_CTL, loading weeks ramp at
+# COMEBACK_RAMP in Base and Build alike. Only from COMEBACK_FROM, so the replayed past keeps
+# the verdicts it was judged by.
+COMEBACK_CTL = 50.0
+COMEBACK_RAMP = 5.0
+COMEBACK_FROM = date(2026, 11, 23)
 CTL_GAIN_PER_WEEK = 1 - math.exp(-7 / 42)
 MIN_TARGET = 120                     # loading-week floor (TSS) so a near-zero CTL still gets a real week
 
@@ -217,8 +224,43 @@ def return_status(training_days: list[date], today: date, sick_until: date | Non
     return {**out, "stage": "on_plan", "guidance": "Training normally - follow the plan."}
 
 
-def week_targets(kind: str, ctl: float, available_days: int = 7) -> tuple[float, float]:
-    """Weekly TSS range, scaled down pro rata for days the athlete can't train."""
+def comeback(ctl: float, wk: date) -> bool:
+    """Is the week starting wk a comeback week (regaining fitness at the faster ramp)?"""
+    return wk >= COMEBACK_FROM and ctl < COMEBACK_CTL
+
+
+# A comeback week never asks for more than the athlete's own top weeks (90th percentile) at the same
+# fitness in the benchmark years - the same yardstick push experiments use (core/push.py).
+BENCHMARK_YEARS = (2022, 2024)
+BENCHMARK_BAND = 5
+
+
+def benchmark_weeks(conn) -> list[tuple[float, float]]:
+    """(CTL at the start, weekly load) for every week of the benchmark years."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH weeks AS (
+                SELECT date_trunc('week', start_time)::date AS wk, SUM(COALESCE(training_load, 0)) AS load
+                FROM activities
+                WHERE superseded_by IS NULL AND EXTRACT(YEAR FROM start_time) BETWEEN %s AND %s
+                GROUP BY 1
+            )
+            SELECT m.ctl, w.load FROM weeks w JOIN daily_metrics m ON m.day = w.wk - 1 WHERE m.ctl IS NOT NULL;
+        """, BENCHMARK_YEARS)
+        return [(float(r["ctl"]), float(r["load"])) for r in cur.fetchall()]
+
+
+def benchmark_top(weeks: list[tuple[float, float]], ctl: float, share: float = 0.9) -> float | None:
+    loads = sorted(load for c, load in weeks if abs(c - ctl) <= BENCHMARK_BAND)
+    if len(loads) < 4:
+        return None
+    return loads[min(len(loads) - 1, int(share * len(loads)))]
+
+
+def week_targets(kind: str, ctl: float, available_days: int = 7, back: bool = False,
+                 cap: float | None = None) -> tuple[float, float]:
+    """Weekly TSS range, scaled down pro rata for days the athlete can't train. `back`: comeback ramp,
+    capped at `cap` (the benchmark top at this CTL) but never below the normal ramp."""
     hold = 7 * ctl
     if kind == "recovery":
         lo, hi = max(hold * 0.5, 60), max(hold * 0.7, 90)
@@ -228,6 +270,9 @@ def week_targets(kind: str, ctl: float, available_days: int = 7) -> tuple[float,
     else:
         phase = "Base" if kind.startswith("base") else "Build"
         center = max(hold + 7 * RAMP[phase] / CTL_GAIN_PER_WEEK, MIN_TARGET)
+        if back:
+            fast = hold + 7 * COMEBACK_RAMP / CTL_GAIN_PER_WEEK
+            center = max(center, min(fast, cap) if cap else fast)
         lo, hi = center * 0.9, center * 1.1
     scale = available_days / 7
     return round(lo * scale), round(hi * scale)
@@ -425,6 +470,7 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
     today = today or date.today()
     this_monday = monday(today)
     weeks, ctl, tsb, hrv = _history(conn, REPLAY_FROM, today)
+    bench = benchmark_weeks(conn)
     races = load_races(today) if races is None else races
     availability = avail.load(today) if availability is None else availability
 
@@ -446,7 +492,7 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
         ctl_end = _at(ctl, wk + timedelta(days=6), ctl_start)
         kind, why = week_kind(s, _at(tsb, eve), hrv_trend(hrv, eve), race=race_plan(wk, races))
         free = available(wk)
-        lo, hi = week_targets(kind, ctl_start, free)
+        lo, hi = week_targets(kind, ctl_start, free, comeback(ctl_start, wk), benchmark_top(bench, ctl_start))
         load, days = weeks.get(wk, (0.0, 0))
         verdict = judge(kind, load, days, lo, hi, free)
         rows.append(_row(wk, s.phase, kind, lo, hi, verdict, _why(why, reason, free), load))
@@ -466,9 +512,14 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
         else:
             kind, why = week_kind(s, None, None, projected=True, race=race)
         free = available(wk)
-        lo, hi = week_targets(kind, proj_ctl, free)
-        rows.append(_row(wk, s.phase, kind, lo, hi, None, _why(why, reason, free) if i == 0 else _why(
-            None, why or "projected - assumes the weeks before are completed", free), None))
+        back = comeback(proj_ctl, wk) and kind not in ("recovery", *RACE_TARGETS)
+        lo, hi = week_targets(kind, proj_ctl, free, back, benchmark_top(bench, proj_ctl))
+        text = _why(why, reason, free) if i == 0 else _why(
+            None, why or "projected - assumes the weeks before are completed", free)
+        if back:
+            text += (f"; comeback ramp (+{COMEBACK_RAMP:g} CTL/week while CTL is under {COMEBACK_CTL:g}, "
+                     "at most your top weeks at this fitness in 2022-24)")
+        rows.append(_row(wk, s.phase, kind, lo, hi, None, text, None))
         load, days = (lo + hi) / 2, free
         if i == 0:
             days_left = available(wk, after=today)

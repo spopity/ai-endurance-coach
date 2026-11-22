@@ -4,9 +4,10 @@ short, time-boxed window - without touching the plan. training_blocks, its targe
 verdicts stay exactly as they are; a push only adds a ceiling the coach may train up to, in
 metrics_context["push"] (rule 18 in agents/ai_coach.py).
 
-- A push lasts up to MAX_DAYS and ends by itself. It is checked every day: while the body or
-  the injury checks object, it is simply off (allowed_today false, with the reasons), and the
-  plan applies.
+- A push lasts up to MAX_DAYS and ends by itself. It is checked every day: on a hard stop (red
+  body, a HIGH finding, illness) it is simply off (allowed_today false, with the reasons) and the
+  plan applies; an amber day or a single caution keeps the extra volume and only holds the extra
+  intensity (intensity_held_because).
 - The ceiling is the weekly load for a CTL ramp of RAMP_BY_LEVEL (the plan aims for 2-3/week),
   never above what the athlete actually did at this fitness in their BENCHMARK_YEARS.
 - Each push is an experiment with a result, judged when it ends: "absorbed" (more load than the
@@ -22,8 +23,8 @@ from core.db import get_connection
 from core.feedback import signals as feedback_signals
 from core.injury_checks import run_injury_checks
 from core.overview import cached, hrv_status, query
-from core.periodization import CTL_GAIN_PER_WEEK, monday
-from core.readiness import verdict
+from core.periodization import CTL_GAIN_PER_WEEK, comeback, monday
+from core.readiness import sleep_status, verdict
 
 logger = logging.getLogger("AI_COACH_V1.push")
 
@@ -32,6 +33,9 @@ DEFAULT_DAYS, MAX_DAYS = 7, 14
 MIN_JUDGED_DAYS = 3                  # a push stopped sooner says nothing, unless it was too much
 COOLDOWN_DAYS = 7
 RAMP_BY_LEVEL = {1: 4.0, 2: 5.0}     # CTL/week. In the athlete's benchmark years, ramps above ~6 mostly ended in a collapse
+# While regaining lost fitness (core/periodization.comeback) the plan itself ramps at 5/week, so a
+# push sits above that. Still capped by the benchmark weeks at this CTL and watched by the ramp check.
+COMEBACK_RAMP_BY_LEVEL = {1: 6.0, 2: 7.0}
 BENCHMARK_YEARS = (2022, 2024)       # years with real training time (the latest two had little: not a fair yardstick)
 BENCHMARK_BAND = 5                   # weeks that started within this many CTL of today's
 MIN_BENCHMARK_WEEKS = 4
@@ -95,10 +99,12 @@ def benchmark(ctl: float) -> dict | None:
             "typical": at(0.5), "high": at(0.75), "top": at(0.9)}
 
 
-def week_ceiling(ctl: float, level: int, plan_max: float, available_days: int, bench: dict | None) -> int:
+def week_ceiling(ctl: float, level: int, plan_max: float, available_days: int, bench: dict | None,
+                 comeback: bool = False) -> int:
     """The most load a pushed week may reach: the ramp's load, within the benchmark, scaled for
     days off. Never below the plan's own maximum - a push can't make the plan smaller."""
-    ramp_load = 7 * ctl + 7 * RAMP_BY_LEVEL[level] / CTL_GAIN_PER_WEEK
+    ramp = (COMEBACK_RAMP_BY_LEVEL if comeback else RAMP_BY_LEVEL)[level]
+    ramp_load = 7 * ctl + 7 * ramp / CTL_GAIN_PER_WEEK
     if bench:
         ramp_load = min(ramp_load, bench["top"])
     return round(max(ramp_load * available_days / 7, plan_max))
@@ -133,7 +139,12 @@ def _signals() -> dict:
     except Exception as e:
         logger.warning(f"Athlete feedback unavailable: {e}")
         subjective = None
-    level, text = verdict(tsb, hrv_status(), None, subjective)
+    try:
+        sleep = sleep_status()
+    except Exception as e:
+        logger.warning(f"Sleep status unavailable: {e}")
+        sleep = None
+    level, text = verdict(tsb, hrv_status(), None, subjective, sleep)
     return {"body_level": level, "body_text": text,
             "findings": cached("injury", 300, run_injury_checks)["findings"]}
 
@@ -206,11 +217,13 @@ def status(back: dict | None = None, today: date | None = None) -> dict:
         level = active["level"]
     week = _week(today)
 
+    # Since 2026-11-22 only hard stops block a push (red body, a HIGH finding, illness): an amber day
+    # or a single caution keeps the extra volume and only switches off the extra intensity.
     blocked = _warnings(signals, stage)
+    holds = [f"injury check: {f['title']}" for f in signals["findings"]
+             if f["severity"] == "caution" and f["area"] in HOLD_AREAS]
     if signals["body_level"] == "amber":
-        blocked.append(signals["body_text"])
-    blocked += [f"injury check: {f['title']}" for f in signals["findings"]
-                if f["severity"] == "caution" and f["area"] in HOLD_AREAS]
+        holds.append(signals["body_text"])
     if stage in NO_PUSH_STAGES and "illness" not in blocked:
         blocked.append("still easing back in after a break")
     if cooldown and not active:
@@ -223,7 +236,9 @@ def status(back: dict | None = None, today: date | None = None) -> dict:
             blocked.append(f"{week['phase'].lower()} week - the rest is part of the plan")
         bench = benchmark(week["ctl"])
         plan_max = float(week["target_weekly_load_max"] or 0)
-        ceiling = week_ceiling(week["ctl"], level, plan_max, week["available_days"], bench)
+        back_on = comeback(week["ctl"], monday(today))
+        ceiling = week_ceiling(week["ctl"], level, plan_max, week["available_days"], bench, back_on)
+        out["comeback"] = back_on
         room = max(0, round(ceiling - week["load"]))
         if not room:
             blocked.append(f"this week is already at the ceiling ({ceiling} TSS)")
@@ -234,9 +249,10 @@ def status(back: dict | None = None, today: date | None = None) -> dict:
     allowed = not blocked
     if active:
         hard_ok = (active["kind"] in ("intensity", "both") and allowed and week and week["phase"] in INTENSITY_PHASES
-                   and not any(f["severity"] == "caution" for f in signals["findings"]))
+                   and not holds)
         out.update(kind=active["kind"], started=active["started"], until=active["until"], note=active.get("note", ""),
                    allowed_today=allowed, intensity_allowed=bool(hard_ok))
+    out["intensity_held_because"] = holds
     # Only worth offering once the plan's own work for the week is done.
     out["can_offer"] = bool(not active and allowed and week and week["load"] >= float(week["target_weekly_load_min"] or 0))
     out["blocked_because"] = blocked

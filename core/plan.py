@@ -28,6 +28,21 @@ SST_SS_MIN = 20     # Intervals.icu sweet-spot band
 SST_Z4_MIN = 15     # power Z4 (or HR Z4 >= SST_SS_MIN)
 
 
+# Runs by heart rate (Intervals.icu HR zones; Z3 is tempo): this much time in Z3 or above makes a
+# quality run, a run this long (and not quality) is the long run, anything else is easy.
+RUN_QUALITY_MIN = 15
+LONG_RUN_MIN = 60
+LONG_RIDE_MIN = 110   # an endurance ride this long counts as the week's long ride
+
+
+def run_kind(hr_zones, moving_sec) -> str:
+    """'quality', 'long' or 'easy' for a run."""
+    mins = [(s or 0) / 60 for s in (hr_zones or [])]
+    if sum(mins[2:]) >= RUN_QUALITY_MIN:
+        return "quality"
+    return "long" if (moving_sec or 0) / 60 >= LONG_RUN_MIN else "easy"
+
+
 def classify(activity_type: str, power_zones, hr_zones) -> str | None:
     if activity_type in RUN_TYPES:
         return "run"
@@ -158,4 +173,9 @@ def plan_summary() -> str:
         lines.append(f"A NEW week starts tomorrow (from {next_week['week']}) - if the next session isn't today, "
                      f"plan it for that week: {describe(next_week)} "
                      "Planned sessions: " + ", ".join(f"{v} {k}" for k, v in (next_week["sessions"] or {}).items() if v) + ".")
+    try:
+        from core.schedule import summary as schedule_summary  # lazy: core.schedule imports this module
+        lines.append("NEXT 7 DAYS (the rolling plan - the next session is its first day):\n" + schedule_summary())
+    except Exception as e:
+        logger.warning(f"Week-ahead plan unavailable: {e}")
     return "\n".join(lines)

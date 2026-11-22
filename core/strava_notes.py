@@ -4,9 +4,10 @@ Coach notes in Strava activity descriptions: a facts block computed in code
 sentences from Gemini, appended below the athlete's own description.
 
 Strava descriptions are public to everyone who can see the activity, so notes
-never include wellness, injury, body-weight or FTP-check information. Readiness and
-the shared next-session decision (core/next_session.py) are passed privately: they
-keep the note's "what's next" in line with the coach, without stating the reasons.
+never include wellness, injury, body-weight or FTP-check information. The comment compares
+what was done with what was planned for it (the session pinned to that day, else the next
+session decided after the previous activity), says what the session did for the body and is
+meant to be funny. It never says what comes next - that lives on the dashboard and Telegram.
 
 The posted text is stored in activities.strava_note, so a re-post replaces exactly
 that part of the description and nothing the athlete wrote. A description containing
@@ -15,6 +16,7 @@ that part of the description and nothing the athlete wrote. A description contai
 import logging
 import re
 from datetime import date, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from core import strava
 from core.api_log import trigger
@@ -28,6 +30,8 @@ from core.plan import RIDE_TYPES, RUN_TYPES, classify
 from core.readiness import current_readiness
 
 logger = logging.getLogger("AI_COACH_V1.strava_notes")
+LOCAL_TZ = ZoneInfo("Europe/Bratislava")
+NOT_TRAINING = {"Walk", "Hike"}   # no plan to compare with - a bonus outing
 
 MIN_MINUTES = 20          # any sport type gets a note, but not 5-min warm-up walks
 MAX_AGE_DAYS = 2           # only fresh activities get a note automatically
@@ -40,10 +44,14 @@ SIGNATURE = "— AI Coach"
 KIND_LABELS = {"endurance": "Endurance", "sst": "Sweet spot", "vo2": "VO2max", "run": "Run", "weights": "Weights"}
 RECOVERY_IF = 0.55  # Coggan active recovery: below 55% of FTP
 
-COMMENT_PROMPT = """You are an elite endurance coach writing 2-3 short sentences (max 50 words) under a workout on
-Strava, for the athlete and their followers. Knowledgeable, encouraging and specific to this session - witty is
-fine, hype is not. Say what the session did physiologically. Never mention the training plan, the week or its
-phase (build/deload/recovery week), or session counts. {next_rule}
+COMMENT_PROMPT = """You are a sharp, funny endurance coach writing 2-3 short sentences (max 60 words) under a workout on
+Strava, for the athlete and their followers. Do two things:
+1. Compare what was done with what was planned for this session (below): nailed it, did more, cut it short, swapped
+   it for something else, or a bonus session nobody asked for. Be honest - a session cut short is not "crushed".
+2. Say what the session did for the body (the training benefit), specific to this session.
+Make it genuinely funny: dry wit, a light pun or a playful comparison is welcome; tease the session or the effort,
+never the athlete. No hype, no clichés like "beast mode". Do NOT say what comes next or suggest a next session.
+Never mention the plan's week or phase (build/deload/recovery week) or session counts - only this one session.
 Plain text only - no markdown, no hashtags, no emojis, no greeting, no sign-off. Use only facts given below; don't
 repeat the numbers already in the facts block. The activity name is just the athlete's own title - don't treat it
 as a description (except for gym sessions: there it names the muscles worked, see "Gym session" below - never
@@ -52,18 +60,15 @@ claim a gym session trained the legs or helps cycling/running power unless it sa
 Facts block (already shown above your text):
 {facts}
 
+What was planned for this session: {planned}
+
 More context:
 {context}{private}{athlete_notes}"""
-
-NEXT_RULE = ("End with the next session exactly as the coach decided it (below) - same sport and intensity, never "
-             "harder or more exciting - in neutral public words (e.g. \"an easy spin next to soak this up\"), "
-             "without the private reasons behind it. Say \"next\", never \"tomorrow\" or a weekday.")
-NO_NEXT_RULE = "Don't predict or suggest the next session."
 
 PRIVATE = """
 
 PRIVATE - shapes your tone, never mention it or its reasons:
-Athlete readiness: {readiness}.{decision}"""
+Athlete readiness: {readiness}."""
 
 ATHLETE_NOTES = """
 
@@ -184,15 +189,38 @@ def _readiness() -> str:
         return "unknown"
 
 
-def write_comment(facts: str, context: str, notes: str | None = None, next_session: str | None = None) -> str | None:
+def planned_for(a: dict) -> str | None:
+    """What was planned for activity `a`: the session pinned to its day, else the next session the
+    coach had decided after the previous activity (the one standing when the athlete trained)."""
+    from core import availability  # lazy: keeps this module light for the dashboard import
+    day = a["start_time"].astimezone(LOCAL_TZ).date()
     try:
-        llm = gemini_llm("strava_note_writer", temperature=0.3)
+        pin = availability.planned_session(day, include_past=True)
+    except Exception as e:
+        logger.warning(f"Availability unavailable for the plan comparison: {e}")
+        pin = None
+    if pin:
+        return pin["session"]
+    if a["type"] in NOT_TRAINING:
+        return None
+    # The decision standing when the day started: after the last activity of an EARLIER day (a second
+    # session on the same day was part of that plan, not of the decision made after the first one).
+    rows = query("""
+        SELECT next_session FROM activities
+        WHERE superseded_by IS NULL AND next_session IS NOT NULL
+          AND (start_time AT TIME ZONE %s)::date < %s AND start_time >= %s - interval '4 days'
+        ORDER BY start_time DESC LIMIT 1;
+    """, (str(LOCAL_TZ), day, a["start_time"]))
+    return session_line(rows[0]["next_session"]) if rows else None
+
+
+def write_comment(facts: str, context: str, notes: str | None = None, planned: str | None = None) -> str | None:
+    try:
+        llm = gemini_llm("strava_note_writer", temperature=0.6)
         extra = ATHLETE_NOTES.format(notes=notes.strip()) if notes and notes.strip() else ""
-        private = PRIVATE.format(readiness=_readiness(), decision=(
-            f"\nCoach's decided next session: {next_session}" if next_session else ""))
         content = llm.invoke(COMMENT_PROMPT.format(
-            facts=facts, context=context, athlete_notes=extra, private=private,
-            next_rule=NEXT_RULE if next_session else NO_NEXT_RULE)).content
+            facts=facts, context=context, athlete_notes=extra, private=PRIVATE.format(readiness=_readiness()),
+            planned=planned or "nothing specific was planned - treat it as a bonus session and judge it on its own")).content
         if isinstance(content, list):
             content = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
         return " ".join(str(content).split()) or None
@@ -205,9 +233,19 @@ def build_note(a: dict, notes: str | None = None) -> str:
     """`notes`: the athlete's extra context for the comment (falls back to what they gave last time)."""
     with trigger("strava_note"):
         facts, context = build_facts(a)
-        decision = get_or_decide(a)
-        comment = write_comment(facts, context, notes if notes is not None else a.get("strava_note_context"),
-                                session_line(decision) if decision else None)
+        planned = planned_for(a)
+        same_day = query("""
+            SELECT type, name, moving_time_sec FROM activities
+            WHERE superseded_by IS NULL AND external_id <> %s
+              AND (start_time AT TIME ZONE %s)::date = (%s AT TIME ZONE %s)::date ORDER BY start_time;
+        """, (a["external_id"], str(LOCAL_TZ), a["start_time"], str(LOCAL_TZ)))
+        if same_day:
+            context += "\nAlso done the same day (part of the same plan - don't say it was skipped): " + "; ".join(
+                f"{r['type']} '{r['name']}' {round((r['moving_time_sec'] or 0) / 60)} min" for r in same_day) + "."
+        # Still decided here (the timer runs right after a new activity), so Telegram and the dashboard
+        # have it - but the note no longer says what comes next.
+        get_or_decide(a)
+        comment = write_comment(facts, context, notes if notes is not None else a.get("strava_note_context"), planned)
     return "\n".join([facts, "", comment, SIGNATURE] if comment else [facts, SIGNATURE])
 
 

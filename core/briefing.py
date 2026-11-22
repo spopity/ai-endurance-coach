@@ -16,8 +16,7 @@ from core.chat import ask_supervisor
 from core.next_session import latest_decision, refresh as refresh_next_session, session_line, why_line
 from core.overview import build_overview, clear_cache, query
 from core import availability
-from core.feedback import signals as feedback_signals
-from core.readiness import EMOJI as READINESS_EMOJI, verdict as readiness_verdict
+from core.readiness import EMOJI as READINESS_EMOJI, current_readiness
 
 logger = logging.getLogger("AI_COACH_V1.briefing")
 
@@ -44,15 +43,14 @@ def _form_label(tsb: float) -> str:
 
 
 def _readiness(ov: dict) -> tuple[str, str]:
-    """(emoji, one-line verdict) from form, HRV and the injury checks."""
-    f, inj = ov.get("fitness"), ov.get("injury")
-    try:
-        subjective = feedback_signals()
-    except Exception as e:
-        logger.warning(f"Athlete feedback unavailable: {e}")
-        subjective = None
-    level, text = readiness_verdict(f and f["tsb"], ov.get("hrv"), inj and inj["overall"], subjective)
-    return READINESS_EMOJI[level], text
+    """(emoji, one-line verdict) - the same readiness the coach sees (core/readiness.py)."""
+    r = current_readiness()
+    text = r["verdict"]
+    if r.get("sleep") and r["sleep"].get("note") and r["level"] != "red":
+        text += f" ({r['sleep']['note']})"
+    if r["running"]["rule"]:
+        text += f". Running: {r['running']['rule']}"
+    return READINESS_EMOJI[r["level"]], text
 
 
 def _yesterday_activities() -> list[dict]:

@@ -1,4 +1,4 @@
-import type { Activity, ChatMessage, ChatModel, SessionProposal, FocusMode, InjuryReport, NextSession, Overview, PlanWeek, PmcPoint, StravaNoteStatus, TrainingFocus, Usage, WeekPoint, WellnessPoint } from "./types";
+import type { Activity, ChatMessage, ChatModel, SessionProposal, FocusMode, InjuryReport, NextSession, Overview, PlanWeek, PmcPoint, StravaNoteStatus, TrainingFocus, Usage, WeekAhead, WeekPoint, WellnessPoint } from "./types";
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -19,6 +19,7 @@ export const api = {
   wellness: (days: number) => get<WellnessPoint[]>(`/api/wellness?days=${days}`),
   weekly: (weeks: number) => get<WeekPoint[]>(`/api/weekly?weeks=${weeks}`),
   plan: (weeks: number) => get<PlanWeek[]>(`/api/plan?weeks=${weeks}`),
+  weekAhead: () => get<WeekAhead>("/api/week-ahead"),
   nextSession: () => get<NextSession>("/api/next-session"),
   decideNextSession: (redo: boolean) => post<NextSession>("/api/next-session", { redo }),
   resolveProposal: (id: number, action: "apply" | "discard") =>

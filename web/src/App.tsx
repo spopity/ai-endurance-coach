@@ -13,6 +13,7 @@ import { RaceCard } from "./components/RaceCard";
 import { ActivitiesTable } from "./components/ActivitiesTable";
 import { PlanCard } from "./components/PlanCard";
 import { NextSessionCard } from "./components/NextSessionCard";
+import { WeekAheadCard } from "./components/WeekAheadCard";
 import { ChatPanel } from "./components/ChatPanel";
 import { SystemPage } from "./components/SystemPage";
 import { Skeleton } from "./components/Card";
@@ -141,6 +142,7 @@ export default function App() {
             {overview ? <KpiRow data={overview} /> : <Skeleton className="h-[116px]" />}
 
             <NextSessionCard refreshKey={refreshKey} onAsk={askCoach} />
+            <WeekAheadCard refreshKey={refreshKey} />
 
             <div className="grid grid-cols-1 gap-3 lg:gap-4 xl:grid-cols-3">
               {!isMobile && <div className="xl:order-2 [&>section]:h-full">{raceCard}</div>}

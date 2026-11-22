@@ -25,6 +25,7 @@ from core.readiness import current_readiness
 from core.focus import MODES as FOCUS_MODES, get_focus, set_focus
 from core.injury_checks import run_injury_checks
 from core.plan import upcoming_plan
+from core.schedule import build as build_schedule
 from core import strava
 from core.strava_notes import build_note, load_activity, publish_note, require_write_scope, strava_url
 from core.races import fetch_upcoming_races
@@ -110,6 +111,12 @@ def weekly(weeks: int = 12):
 @router.get("/plan")
 def plan(weeks: int = 8):
     return upcoming_plan(max(1, min(weeks, 26)))
+
+
+@router.get("/week-ahead")
+def week_ahead():
+    """The rolling 7-day plan (core/schedule.py), re-derived from what was done."""
+    return _cached("week_ahead", 60, build_schedule)
 
 
 def _next_session_payload() -> dict:

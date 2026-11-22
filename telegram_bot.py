@@ -29,6 +29,7 @@ from core.api_log import trigger
 from core.claude_agent import FALLBACK_NOTE, configured as claude_configured
 from core.chat import AGENT_DISPLAY_NAMES, CLAUDE_AGENT_NODES, SYNC_WINDOW_DAYS, ask_supervisor, new_turn_id, run_sync, turn_proposal
 from core.history import MAX_HISTORY_MESSAGES
+from core.schedule import build as build_schedule, markdown as schedule_markdown
 from core.telegram_format import md_to_telegram_html, split_message
 from core.db import load_env
 from core import availability, feedback, strava
@@ -70,6 +71,8 @@ HELP_TEXT = (
     "/strava [YYYY-MM-DD] [context] - (re)write the coach note on a Strava activity (latest activity by default), "
     "previewed before posting\n"
     "/briefing - today's briefing now (it also arrives every morning)\n"
+    "/week - the next 7 days of training; it re-plans itself after every sync (a missed session moves, "
+    "the filler drops)\n"
     "To change your next session, agree it with the coach and say \"update my plan\" - "
     "nothing changes until you tap Apply.\n"
     "Tell me when you can't train (\"sick for 3 days\", \"away until Sunday\", \"only 40 min today\") - "
@@ -535,6 +538,16 @@ async def on_feedback_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.send_message(chat_id, f"❌ Couldn't save that: {e}")
 
 
+async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Week ahead requested via /week.")
+    try:
+        text = await asyncio.to_thread(lambda: schedule_markdown(build_schedule()))
+    except Exception as e:
+        logger.error("Week-ahead plan failed", exc_info=True)
+        text = f"❌ Couldn't build the week ahead: {e}"
+    await send_markdown_to(context.bot, update.effective_chat.id, text)
+
+
 async def cmd_briefing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Briefing requested via /briefing.")
     await deliver_briefing(context.bot, update.effective_chat.id, context.chat_data)
@@ -554,6 +567,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application):
     await application.bot.set_my_commands([
+        BotCommand("week", "The next 7 days of training"),
         BotCommand("briefing", "Today's briefing now"),
         BotCommand("twin", "Ask the Athlete Twin a what-if directly"),
         BotCommand("local", "Toggle Local only (home GPU instead of Gemini)"),
@@ -597,6 +611,7 @@ def main():
     application.add_handler(CommandHandler("reset", cmd_reset, filters=allowed))
     application.add_handler(CommandHandler("sync", cmd_sync, filters=allowed))
     application.add_handler(CommandHandler("briefing", cmd_briefing, filters=allowed))
+    application.add_handler(CommandHandler("week", cmd_week, filters=allowed))
     application.add_handler(MessageHandler(allowed & filters.TEXT & ~filters.COMMAND, on_message))
     application.add_handler(MessageHandler(~allowed, on_unauthorized))
     application.add_error_handler(on_error)

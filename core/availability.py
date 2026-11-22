@@ -179,10 +179,11 @@ def day_status(d: date, data: dict | None = None) -> dict | None:
     return max(hits, key=lambda e: e["created_at"]) if hits else None
 
 
-def planned_session(d: date, data: dict | None = None) -> dict | None:
-    """The session pinned to day d, if any."""
+def planned_session(d: date, data: dict | None = None, include_past: bool = False) -> dict | None:
+    """The session pinned to day d, if any (`include_past`: also pins that already moved to history)."""
     data = data or load()
-    hits = [e for e in data["entries"] if e["kind"] == "planned" and d.isoformat() in e["dates"]]
+    pool = _all_entries(data) if include_past else data["entries"]
+    hits = [e for e in pool if e["kind"] == "planned" and d.isoformat() in e["dates"]]
     return max(hits, key=lambda e: e["created_at"]) if hits else None
 
 

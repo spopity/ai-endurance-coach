@@ -21,6 +21,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 from core.db import get_connection
+from core.periodization import comeback
 
 logger = logging.getLogger("AI_COACH_V1.injury_checks")
 
@@ -41,6 +42,11 @@ LOOKBACK_DAYS = 150
 RECENT_DAYS = 14
 TREND_RECENT_DAYS = 21
 WEEKLY_RUN_MIN_INCREASE_KM = 8
+# A single run is compared with the longest run of the 30 days before it, but never with less than
+# this: an athlete with years of running handles 8 km, so short recent runs don't turn it into a "spike".
+RUN_SPIKE_FLOOR_KM = 8.0
+ACWR_HIGH, ACWR_CAUTION = 1.5, 1.3
+ACWR_HIGH_COMEBACK, ACWR_CAUTION_COMEBACK = 2.0, 1.7
 
 
 def _finding(severity, area, title, detail):
@@ -106,17 +112,22 @@ def check_load(data, today, findings, checked, gaps):
 
     if ctl >= 10:
         acwr = atl / ctl
-        if acwr >= 1.5:
+        # During a comeback (core/periodization.comeback) a low CTL inflates the ratio: the plan's own
+        # ramp already puts ATL at ~1.5-1.6x CTL, so the thresholds widen; the ramp-rate check and the
+        # recovery signals still watch the absolute progression.
+        back = comeback(ctl, today - timedelta(days=today.weekday()))
+        high, caution = (ACWR_HIGH_COMEBACK, ACWR_CAUTION_COMEBACK) if back else (ACWR_HIGH, ACWR_CAUTION)
+        if acwr >= high:
             findings.append(_finding("high", "Load", f"Acute:chronic load ratio {acwr:.2f}",
-                f"Fatigue (ATL {atl:.0f}) is {acwr:.2f}x fitness (CTL {ctl:.0f}). Ratios above 1.5 are strongly "
+                f"Fatigue (ATL {atl:.0f}) is {acwr:.2f}x fitness (CTL {ctl:.0f}). Ratios above {high:g} are strongly "
                 "associated with injury and illness - load is spiking faster than the body has adapted to."))
-        elif acwr >= 1.3:
+        elif acwr >= caution:
             findings.append(_finding("caution", "Load", f"Acute:chronic load ratio {acwr:.2f}",
-                f"ATL {atl:.0f} vs CTL {ctl:.0f}. Above ~1.3 is the start of the elevated-risk zone; fine for a planned "
+                f"ATL {atl:.0f} vs CTL {ctl:.0f}. Above ~{caution:g} is the start of the elevated-risk zone; fine for a planned "
                 "overload week, but don't stack another one on top."))
         else:
             findings.append(_finding("ok", "Load", f"Acute:chronic load ratio {acwr:.2f}",
-                "Within the 0.8-1.3 range where load progression is well tolerated."))
+                f"Under {caution:g}{' (comeback range)' if back else ''} - load progression is well tolerated."))
 
     if tsb <= -30:
         findings.append(_finding("high", "Load", f"Form (TSB) {tsb:+.0f}",
@@ -260,8 +271,10 @@ def check_recovery(data, today, findings, checked, gaps):
                 "7-day average is within your usual range."))
         latest = [w for w in wellness if w["hrv"] is not None][-1]
         if sd and latest["day"] >= today - timedelta(days=1) and float(latest["hrv"]) < mean - 1.5 * sd:
-            findings.append(_finding("caution", "Recovery", f"Acute HRV dip on {latest['day']} ({latest['hrv']:.0f} ms)",
-                "A single very low reading - consider swapping today's hard session for an easy one."))
+            # One reading is noise more often than not: it only asks for the warm-up test (core/readiness.py).
+            findings.append(_finding("info", "Recovery", f"Acute HRV dip on {latest['day']} ({latest['hrv']:.0f} ms)",
+                "A single very low reading - keep the planned session, but start with the warm-up test "
+                "(15 min easy + the first interval) and back off if HR or legs feel off."))
     else:
         gaps.append("Not enough HRV readings for a baseline comparison.")
 
@@ -499,14 +512,16 @@ def check_run_spikes(runs, today, findings):
         before = [float(r["distance_m"]) for r in runs if a["day"] - timedelta(days=30) <= r["day"] < a["day"]]
         if not before:
             continue
-        longest = max(before) / 1000
+        longest = max(max(before) / 1000, RUN_SPIKE_FLOOR_KM)
         dist = float(a["distance_m"]) / 1000
         if longest >= 1:
             spikes.append(((dist / longest - 1) * 100, dist, longest, a))
     if not spikes:
         return
     change, dist, longest, a = max(spikes, key=lambda s: s[0])
-    title = f"Longest run +{change:.0f}% ({dist:.1f} km vs {longest:.1f} km in prior 30 days)"
+    if change <= 0:
+        return
+    title = f"Longest run +{change:.0f}% ({dist:.1f} km vs {longest:.1f} km in prior 30 days, {RUN_SPIKE_FLOOR_KM:g} km minimum)"
     if change > 100:
         findings.append(_finding("high", "Running", title,
             f"{_label(a)}: more than double your recent longest run. Single-run spikes like this are the "
