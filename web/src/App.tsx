@@ -146,10 +146,19 @@ export default function App() {
             <WorkoutCard refreshKey={refreshKey} />
             <WeekAheadCard refreshKey={refreshKey} />
 
-            <div className="grid grid-cols-1 gap-3 lg:gap-4 xl:grid-cols-3">
-              {!isMobile && <div className="xl:order-2 [&>section]:h-full">{raceCard}</div>}
-              <div className="xl:order-1 xl:col-span-2"><PmcChart refreshKey={refreshKey} compact={isMobile} /></div>
-            </div>
+            {/* With a race: fitness chart | race card. Without one the chart takes the row and the
+                race hint shrinks to one line, so no card sits half empty. */}
+            {overview && !overview.next_race ? (
+              <>
+                <PmcChart refreshKey={refreshKey} compact={isMobile} />
+                {!isMobile && <RaceCard race={null} onAsk={askCoach} slim />}
+              </>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 lg:gap-4 xl:grid-cols-3">
+                {!isMobile && <div className="xl:order-2 [&>section]:h-full">{raceCard}</div>}
+                <div className="xl:order-1 xl:col-span-2"><PmcChart refreshKey={refreshKey} compact={isMobile} /></div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 gap-3 lg:gap-4 xl:grid-cols-3">
               {/* Phones: warnings first, plan after weekly load. Desktop keeps weekly | recovery | injury, plan below. */}
@@ -160,7 +169,7 @@ export default function App() {
             </div>
 
             {/* Phones: race countdown sits after recovery, just before activities. */}
-            {isMobile && raceCard}
+            {isMobile && (overview && !overview.next_race ? <RaceCard race={null} onAsk={askCoach} slim /> : raceCard)}
 
             <ActivitiesTable refreshKey={refreshKey} onAsk={askCoach} compact={isMobile} />
           </div>

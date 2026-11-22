@@ -12,7 +12,20 @@ const PRIORITY_STYLE: Record<string, string> = {
   C: "from-slate-500 to-slate-600",
 };
 
-export function RaceCard({ race, onAsk }: { race: NextRace | null; onAsk: (q: string) => void }) {
+export function RaceCard({ race, onAsk, slim = false }: { race: NextRace | null; onAsk: (q: string) => void; slim?: boolean }) {
+  if (!race && slim) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl border border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-xs text-slate-400">
+        <Flag size={14} className="text-orange-400" />
+        <span className="font-medium text-slate-300">No upcoming races.</span>
+        <span>
+          Add a <b className="text-slate-300">Race A/B/C</b> event in Intervals.icu with{" "}
+          <span className="font-mono text-[11px] text-slate-300">Distance: 120 km · Elevation: 1500 m · Location: town · Goal: sub 5h</span>{" "}
+          in the description, and the race plan appears here.
+        </span>
+      </div>
+    );
+  }
   if (!race) {
     return (
       <Card title="Next race" icon={<Flag size={15} className="text-orange-400" />} className="flex flex-col">
