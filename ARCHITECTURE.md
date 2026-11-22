@@ -680,8 +680,8 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `sync_strava_names.py` | Matches Strava (last 6 months, `--full` for all) to local activities and pushes Strava names to Intervals.icu and the database | Run by the nightly name timer |
 | `backfill_strava_history.py` | One-time: uploads Strava-only activities to Intervals.icu (TCX from streams), links double recordings, re-imports the DB; re-runnable, report in `state/strava_backfill_report.txt` | Run once by hand (2026-10-11) |
 | `check_intervals_sync.py` | Reconciliation of activities and wellness over the last 15 days (`--days N`, `--full`), `--fix`, `--notify` | Run by the nightly sync-check timer |
-| `backup.py` | Nightly encrypted backup: `pg_dump` (custom format) and `state/`, AES-256 with `BACKUP_PASSPHRASE`, each verified by decrypting and reading it back, into `/var/backups/ai-coach` (14 daily + 8 weekly); restore steps in its docstring | Data survives losing the container or the database |
-| `check_health.py` | Hourly: any service with 3+ failures making half its calls in 3 h, any credits/billing/login error, a backup older than 30 h, no Garmin HRV for 2 days, a failed ai-coach unit; Telegram on new problems and on recovery | Fallbacks no longer hide outages (e.g. Gemini credits running out) |
+| `backup.py` | Nightly encrypted backup: `pg_dump` (custom format) and `state/`, AES-256 with `BACKUP_PASSPHRASE`, each verified by decrypting and reading it back, into `/var/backups/ai-coach` (14 daily + 8 weekly), then mirrored to the NAS over SMB (`smbprotocol`; `NAS_*` in `.env`, folder `<NAS_SHARE>/ai-coach`, each upload read back and SHA-256-checked; SMB 3 encryption when offered, else a signed SMB 2 session - the files are encrypted anyway); `--nas-only` re-mirrors; restore steps in its docstring | Data survives losing the container, the database or the whole server |
+| `check_health.py` | Hourly: any service with 3+ failures making half its calls in 3 h, any credits/billing/login error, a backup (or its NAS copy) older than 30 h, no Garmin HRV for 2 days, a failed ai-coach unit; Telegram on new problems and on recovery | Fallbacks no longer hide outages (e.g. Gemini credits running out) |
 | `check_intervals_api.py` | One-request API health probe; alerts only on a state change | Run by the 15-min health timer |
 
 ### `db/migrations/`: schema history (applied in order)
@@ -714,7 +714,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `ai-coach-telegram.service` | `telegram_bot.py` (a separate process, so a bot crash never takes down the web UI) |
 | `ai-coach-strava-notes.service` / `.timer` | `post_strava_notes.py` every 10 min |
 | `ai-coach-intervals-health.service` / `.timer` | `check_intervals_api.py --notify` every 15 min |
-| `ai-coach-backup.service` / `.timer` | Nightly at 02:45: `scripts/backup.py --notify` (writes only `/var/backups/ai-coach` and `logs/`) |
+| `ai-coach-backup.service` / `.timer` | Nightly at 02:45: `scripts/backup.py --notify`, then the NAS copy (writes only `/var/backups/ai-coach`, `state/` and `logs/`) |
 | `ai-coach-health.service` / `.timer` | Hourly at :07: `scripts/check_health.py --notify` |
 | `logrotate-ai-coach` | Copied to `/etc/logrotate.d/ai-coach`: weekly rotation for the logs of short-lived jobs (`intervals_health`, `health`, `backup`) and `sync-cron.log`, which Python's own daily rotation never rotates |
 | `pre-commit` | Git hook: runs `pytest tests` before every commit (`cp deploy/pre-commit .git/hooks/`) |
@@ -764,7 +764,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `.env` | Real secrets and settings (see `.env.example`) |
 | `credentials.json`, `token.json` | Google Calendar OAuth (life agent) |
 | `state/strava_tokens.json`, `state/withings_tokens.json` | OAuth tokens written by the auth scripts and refreshed by the app |
-| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `workouts/pinned.json` (pinned sessions converted to steps), `health_alerts.json` (open problems of the hourly health check), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
+| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `workouts/pinned.json` (pinned sessions converted to steps), `health_alerts.json` (open problems of the hourly health check), `backup_nas.json` (last copy to the NAS), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
 | `logs/` | Rotating logs for each process, plus `sync-cron.log` |
 | `venv/` | The Python virtualenv |
 | `/var/backups/ai-coach/` | Encrypted nightly backups (`db-*.dump.enc`, `state-*.tar.gz.enc`), coach-only (0600) |

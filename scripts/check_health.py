@@ -8,7 +8,7 @@ Checks:
 - money / auth errors on any call in the last 3 hours (402, 401, 403, exhausted credits, revoked
   tokens) - one is enough, since the fallbacks hide them (e.g. Gemini credits ran out in Nov 2026
   and 67 coach answers quietly came from the fallback),
-- the newest backup in /var/backups/ai-coach is older than 30 h,
+- the newest backup in /var/backups/ai-coach is older than 30 h, or its copy on the NAS is,
 - no Garmin health day (HRV) for the last 2 days,
 - an ai-coach systemd unit in the failed state.
 
@@ -75,6 +75,20 @@ def check_backup() -> dict:
     return {"backup": f"the newest backup is {age_h:.0f} h old"} if age_h > BACKUP_MAX_AGE_H else {}
 
 
+def check_nas_copy() -> dict:
+    """The off-machine copy (scripts/backup.py): only checked once NAS_PASSWORD is set."""
+    if not load_env().get("NAS_PASSWORD"):
+        return {}
+    try:
+        with open(os.path.join(ROOT, "state", "backup_nas.json")) as f:
+            last = json.load(f)["last_ok"]
+    except (OSError, ValueError, KeyError):
+        return {"nas": "the backup has never been copied to the NAS"}
+    from datetime import datetime
+    age_h = (datetime.now() - datetime.fromisoformat(last)).total_seconds() / 3600
+    return {"nas": f"the last backup copy on the NAS is {age_h:.0f} h old"} if age_h > BACKUP_MAX_AGE_H else {}
+
+
 def check_garmin() -> dict:
     rows = query("SELECT max(day) last FROM daily_metrics WHERE hrv IS NOT NULL;", ())
     last = rows[0]["last"] if rows else None
@@ -110,7 +124,7 @@ def main() -> int:
     env = load_env()
 
     problems = {}
-    for check in (check_services, check_backup, check_garmin, check_units):
+    for check in (check_services, check_backup, check_nas_copy, check_garmin, check_units):
         try:
             problems.update(check())
         except Exception as e:

@@ -187,6 +187,7 @@ Fill it in:
 | `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated numeric Telegram user ids allowed to use the bot. Ask [@userinfobot](https://t.me/userinfobot) for yours. **Required if the bot runs**: it refuses to start without it. |
 | `DASHBOARD_TOKEN` | Dashboard login: a long random string (`python3 -c "import secrets; print(secrets.token_urlsafe(18))"`), entered once per browser at `/login`. Empty means no login (§8) |
 | `BACKUP_PASSPHRASE` | Encrypts the nightly backup (§6). Keep a copy somewhere else, or the backups can't be restored |
+| `NAS_HOST` / `NAS_SHARE` / `NAS_USER` / `NAS_PASSWORD` | Optional: the nightly backup is also copied to `<NAS_SHARE>/ai-coach` on this SMB server (e.g. a Synology; a user with write access to its home folder is enough) |
 
 Optional settings (commented out in `.env.example`):
 
@@ -385,7 +386,7 @@ cd web && npm run dev     # Vite dev server; proxies /api to localhost:8000
 | `ai-coach-sync-check.timer` | Nightly at 03:30: the last 15 days from Garmin and from Intervals.icu (imports anything the regular sync missed) |
 | `ai-coach-plan.timer` | Nightly adaptive-plan update, 04:00 |
 | `ai-coach-strava-names.timer` | Nightly Strava → Intervals.icu name sync, 04:15 |
-| `ai-coach-backup.timer` | Nightly at 02:45: encrypted, verified backup of the database and `state/` to `/var/backups/ai-coach` (14 daily + 8 weekly kept) |
+| `ai-coach-backup.timer` | Nightly at 02:45: encrypted, verified backup of the database and `state/` to `/var/backups/ai-coach` (14 daily + 8 weekly kept), mirrored to a NAS if `NAS_*` is set |
 | `ai-coach-health.timer` | Hourly: Telegram alert when a service keeps failing, credits or a login run out, the backup is stale, Garmin data stops or a unit fails |
 
 The services run as an unprivileged system user `coach`, sandboxed so that they can
