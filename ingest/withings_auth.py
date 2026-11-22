@@ -16,7 +16,7 @@ import requests
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TOKEN_PATH = os.path.join(ROOT, "withings_tokens.json")
+TOKEN_PATH = os.path.join(ROOT, "state", "withings_tokens.json")
 REDIRECT_URI = "http://localhost"
 
 

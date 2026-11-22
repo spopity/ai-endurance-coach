@@ -24,7 +24,7 @@ sys.path.insert(0, ROOT)
 
 from core.db import load_env  # noqa: E402
 
-TOKEN_PATH = os.path.join(ROOT, "strava_tokens.json")
+TOKEN_PATH = os.path.join(ROOT, "state", "strava_tokens.json")
 REDIRECT_URI = "http://localhost"
 SCOPE = "activity:read_all,activity:write"
 

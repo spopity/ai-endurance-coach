@@ -513,8 +513,8 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `import_garmin.py` | Garmin Personal API: shared token from the API key, fetch, map (`map_day`) and upsert health days (`sync_garmin`), committed per 28-day chunk; `--days N` or `--start YYYY-MM-DD` backfills and resumes | Every health metric (sleep, HRV, RHR, stress, Body Battery, SpO2...) |
 | `import_profile.py` | Sync FTP/LTHR/max HR/resting HR/weight and the latest eFTP into `athlete_profile` | One place to edit thresholds |
 | `import_withings.py` | Fetch Withings weight measurements into `daily_metrics.weight_kg` | Body-weight history |
-| `withings_auth.py` | One-time interactive Withings OAuth that writes `withings_tokens.json` | Setup only |
-| `strava_auth.py` | One-time Strava OAuth (read_all + write scopes) that writes `strava_tokens.json` | Setup only; required for names and notes |
+| `withings_auth.py` | One-time interactive Withings OAuth that writes `state/withings_tokens.json` | Setup only |
+| `strava_auth.py` | One-time Strava OAuth (read_all + write scopes) that writes `state/strava_tokens.json` | Setup only; required for names and notes |
 | `_sample_wellness.json` | A synthetic example Intervals.icu wellness payload | Reference for the wellness field mapping |
 
 ### `scripts/`: maintenance and timers
@@ -602,7 +602,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 |---|---|
 | `.env` | Real secrets and settings (see `.env.example`) |
 | `credentials.json`, `token.json` | Google Calendar OAuth (life agent) |
-| `strava_tokens.json`, `withings_tokens.json` | OAuth tokens written by the auth scripts |
+| `state/strava_tokens.json`, `state/withings_tokens.json` | OAuth tokens written by the auth scripts and refreshed by the app |
 | `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
 | `logs/` | Rotating logs for each process, plus `sync-cron.log` |
 | `venv/` | The Python virtualenv |

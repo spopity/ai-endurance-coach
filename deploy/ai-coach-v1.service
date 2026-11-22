@@ -4,6 +4,15 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# Unprivileged service user (2026-11-22). Writable: state/, logs/ and its own home only.
+User=coach
+Group=coach
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/ai-coach-v1/state /opt/ai-coach-v1/logs /var/lib/coach
 Type=simple
 WorkingDirectory=/opt/ai-coach-v1
 ExecStart=/opt/ai-coach-v1/venv/bin/python /opt/ai-coach-v1/app.py

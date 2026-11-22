@@ -1,7 +1,7 @@
 """
 Backfill/sync: pulls weight measurements from Withings and upserts them into
 ai-coach-v1's daily_metrics.weight_kg. Requires ingest/withings_auth.py to
-have been run once already (produces withings_tokens.json).
+have been run once already (produces state/withings_tokens.json).
 
 Run: python ingest/import_withings.py [--days 365]
 """
@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TOKEN_PATH = os.path.join(ROOT, "withings_tokens.json")
+TOKEN_PATH = os.path.join(ROOT, "state", "withings_tokens.json")
 
 
 def load_env():

@@ -258,7 +258,7 @@ Goal: finish under 5h
    ```
    Open the printed link and authorise with **all boxes ticked**. Your browser then
    redirects to a broken `localhost` page; that's expected. Paste the `code` value from
-   the URL bar back into the script. This writes `strava_tokens.json`; see
+   the URL bar back into the script. This writes `state/strava_tokens.json`; see
    `strava_tokens.json.example` for its shape. The app refreshes the tokens on its own
    after that.
 
@@ -278,7 +278,7 @@ What it enables:
    `http://localhost`.
 2. Put its Client ID and Secret into `.env`.
 3. Run `venv/bin/python ingest/withings_auth.py` in a terminal and follow the prompts.
-   This writes `withings_tokens.json` (see `withings_tokens.json.example`).
+   This writes `state/withings_tokens.json` (see `withings_tokens.json.example`).
 4. Import: `venv/bin/python ingest/import_withings.py --days 365`
 
 If your scale already syncs weight to Intervals.icu, you can skip Withings.
@@ -362,6 +362,23 @@ cd web && npm run dev     # Vite dev server; proxies /api to localhost:8000
 | `ai-coach-sync-check.timer` | Nightly at 03:30: the last 15 days from Garmin and from Intervals.icu (imports anything the regular sync missed) |
 | `ai-coach-plan.timer` | Nightly adaptive-plan update, 04:00 |
 | `ai-coach-strava-names.timer` | Nightly Strava → Intervals.icu name sync, 04:15 |
+
+The services run as an unprivileged system user `coach`, sandboxed so that they can
+only write `state/` and `logs/`. Create it and hand it those folders and read access to
+the secrets first:
+
+```bash
+sudo useradd --system --home-dir /var/lib/coach --create-home --shell /usr/sbin/nologin coach
+mkdir -p state logs
+sudo chown -R coach:coach state logs && sudo chmod 750 state logs
+sudo chown root:coach .env && sudo chmod 640 .env
+# if you set up Google Calendar:
+sudo chown root:coach token.json credentials.json && sudo chmod 640 token.json credentials.json
+```
+
+From then on, run scripts that write tokens or state (the auth scripts in §4, imports,
+backfills) as that user, e.g. `sudo -u coach venv/bin/python ingest/strava_auth.py`, so
+the services can keep refreshing what they write.
 
 ```bash
 sudo cp deploy/*.service deploy/*.timer /etc/systemd/system/
@@ -490,7 +507,7 @@ tail -f logs/app.log logs/telegram.log
 | `/` shows a plain chat page instead of the dashboard | The dashboard isn't built: run `cd web && npm install && npm run build` |
 | Every answer comes from the AI Coach | Ollama isn't reachable (the supervisor falls back to the coach). Check `OLLAMA_BASE_URL` and that the model is pulled. |
 | History questions fail with `READONLY_DATABASE_URL is not set` | Run `scripts/setup_readonly_role.py` and restart |
-| `strava_tokens.json not found` | Run `ingest/strava_auth.py` (§4.2) |
+| `state/strava_tokens.json not found` | Run `ingest/strava_auth.py` (§4.2) |
 | `Strava token lacks activity:write` | Re-run `ingest/strava_auth.py` with every box ticked |
 | Telegram bot exits at start | `TELEGRAM_BOT_TOKEN` or `TELEGRAM_ALLOWED_USER_IDS` is missing |
 | Empty charts | No data imported yet: run the §3.5 imports, check `INTERVALS_ATHLETE_ID` and `INTERVALS_API_KEY` |

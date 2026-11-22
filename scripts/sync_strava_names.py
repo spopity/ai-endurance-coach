@@ -8,7 +8,7 @@ matched to a local one by the Strava ID Intervals.icu recorded (when it has
 one), otherwise by UTC start time within MATCH_WINDOW_SEC. The name an
 activity had before its first rename is kept in activities.name_before_strava.
 
-Requires ingest/strava_auth.py to have been run once (strava_tokens.json); the Strava
+Requires ingest/strava_auth.py to have been run once (state/strava_tokens.json); the Strava
 client lives in core/strava.py.
 
 Run:

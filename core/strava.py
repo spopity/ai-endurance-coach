@@ -2,7 +2,7 @@
 Minimal Strava API client shared by the name sync (scripts/sync_strava_names.py)
 and the coach notes in activity descriptions (core/strava_notes.py).
 
-Tokens come from ingest/strava_auth.py (strava_tokens.json) and are refreshed
+Tokens come from ingest/strava_auth.py (state/strava_tokens.json) and are refreshed
 here when close to expiry - Strava access tokens last 6 hours.
 """
 import json
@@ -14,7 +14,7 @@ import requests
 
 from core.db import ROOT, load_env
 
-TOKEN_PATH = os.path.join(ROOT, "strava_tokens.json")
+TOKEN_PATH = os.path.join(ROOT, "state", "strava_tokens.json")
 STRAVA_API = "https://www.strava.com/api/v3"
 PER_PAGE = 200
 
