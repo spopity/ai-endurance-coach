@@ -19,8 +19,8 @@ Workout text (Intervals.icu workout builder syntax):
 
 The state lives in state/workouts/<date>.json: per session the last pushed text, the event id
 on Intervals and the status (draft / pushed / skipped). The workout is rebuilt from the plan on
-every read; when it no longer matches what was pushed, `changed` is set and Push updates the
-same event. A pushed session the plan no longer has (done already, moved) is kept with
+every read; when the plan's prescription changed since the push, `changed` is set and Push
+updates the same event (otherwise the pushed text is shown as it is on Intervals). A pushed session the plan no longer has (done already, moved) is kept with
 `in_plan: false` so it can still be removed.
 """
 import json
@@ -269,7 +269,11 @@ def for_day(d: date | None = None) -> dict:
         w["status"] = prev.get("status", "draft")
         w["event_id"] = prev.get("event_id")
         w["pushed_at"] = prev.get("pushed_at")
-        w["changed"] = w["status"] == "pushed" and (prev.get("description"), prev.get("name")) != (w["description"], w["name"])
+        # Changed = the plan's prescription changed since the push (not the text: a pushed
+        # workout may have been hand-structured, e.g. a pinned session).
+        w["changed"] = w["status"] == "pushed" and prev.get("plan_detail") != w["plan_detail"]
+        if w["status"] == "pushed" and not w["changed"]:   # show what is actually on Intervals
+            w.update({k: prev[k] for k in ("name", "description", "moving_time_sec", "structured") if k in prev})
         w["in_plan"] = True
         current[key] = w
     for key, prev in stored.items():   # pushed sessions the plan no longer has
