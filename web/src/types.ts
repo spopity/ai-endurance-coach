@@ -278,6 +278,7 @@ export interface Workout {
   type: string;
   description: string;
   plan_detail: string;
+  pinned?: boolean;
   moving_time_sec: number | null;
   structured: boolean;
   status: WorkoutStatus;

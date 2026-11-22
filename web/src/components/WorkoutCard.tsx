@@ -115,6 +115,11 @@ export function WorkoutCard({ refreshKey }: { refreshKey: number }) {
                     )}
                   </div>
                 </div>
+                {w.pinned && w.structured && (
+                  <p className="mb-1.5 text-[11px] text-slate-400">
+                    Your session: <span className="text-slate-300">{w.plan_detail}</span>
+                  </p>
+                )}
                 <pre className="whitespace-pre-wrap rounded-lg bg-black/20 p-2.5 font-mono text-[11px] leading-relaxed text-slate-300">
                   {w.description}
                 </pre>

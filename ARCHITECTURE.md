@@ -386,7 +386,17 @@ text, and goes onto the Intervals.icu calendar **only when the athlete taps Push
   Intervals' run HR zones (`Z2 HR`, `Z4 HR`). Sets and reps follow the plan's
   description (sweet spot 3x12/3x15, threshold 3x10, VO2max 5x3/5x4, tempo 2x15, sprints,
   tempo/threshold runs, hill repeats). Gym becomes a `WeightTraining` event with the
-  prescription as text. A pinned session (the athlete's own words) is pushed as text.
+  prescription as text.
+- **Pinned sessions** (the athlete's own words) are converted to steps by Gemini
+  (temperature 0), keeping exactly what was written. Watts become % FTP, and bpm becomes the HR zone
+  that contains it, because Intervals doesn't read absolute bpm. Code checks the result:
+  - every step needs a duration and a target;
+  - every "N x M" in the text must come back as an N-rep block with an M-long step;
+  - the total must fit any total the text states.
+
+  A result that fails stays plain text, like a "Zwift race". Conversions are cached in
+  `state/workouts/pinned.json`, and a failure is retried after an hour. The preview shows
+  the athlete's text above the steps.
 - **Readiness and time:** amber drops one rep of the main set and adds the warm-up test. A
   "max N min" day shortens the warm-up and cool-down first, then drops reps.
 - **Push:** `POST /api/v1/athlete/{id}/events` with category `WORKOUT` and `external_id`
@@ -706,7 +716,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `.env` | Real secrets and settings (see `.env.example`) |
 | `credentials.json`, `token.json` | Google Calendar OAuth (life agent) |
 | `state/strava_tokens.json`, `state/withings_tokens.json` | OAuth tokens written by the auth scripts and refreshed by the app |
-| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
+| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `workouts/pinned.json` (pinned sessions converted to steps), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
 | `logs/` | Rotating logs for each process, plus `sync-cron.log` |
 | `venv/` | The Python virtualenv |
 | `web/node_modules/`, `web/dist/` | Frontend dependencies and the built dashboard (rebuild with `cd web && npm install && npm run build`) |
