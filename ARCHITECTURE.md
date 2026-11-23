@@ -427,6 +427,17 @@ text, and goes onto the Intervals.icu calendar **only when the athlete taps Push
   - the 7-day plan counts ≥ 80% as done (§4.6b);
   - the Strava note shows "📋 Plan: <workout> · N% done", and the comment compares the steps
     with what was done.
+- **Fueling:** every workout starts with a `Fuel:` line from `core/nutrition.py`, worked out
+  from duration, intensity, sport and the athlete's weight. It sits above the steps, so it shows
+  on Intervals.icu, Garmin, Telegram and the dashboard.
+  - Before: ~1.5 g/kg carbs 2-3 h before a hard or 90+ min session, otherwise a normal meal.
+  - During: water under 60 min, 30 g/h at 60-90 min (none for easy sessions under 75 min),
+    60 g/h at 90-150 min (75 g/h when hard), and 90 g/h over 150 min (75 g/h running).
+    Electrolyte fluids are added from 90 min.
+  - After: ~0.3 g/kg protein (0.4 after gym), plus ~1 g/kg carbs within the hour after hard or
+    long sessions.
+
+  The steps carry no fuel cues of their own, and the durability test's carbs/h come from the same rule.
 - **Readiness and time:** amber drops one rep of the main set and adds the warm-up test. A
   "max N min" day shortens the warm-up and cool-down first, then drops reps.
 - **Push:** `POST /api/v1/athlete/{id}/events` with category `WORKOUT` and `external_id`
@@ -643,7 +654,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (103 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (110 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |
@@ -685,6 +696,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `periodization.py` | Adaptive phase engine: replays closed weeks (completed/partial/missed), rolling Base→Build gate, CTL-drop step-back, form/HRV-timed deloads, CTL-based targets, projection; `hrv_trend()` and the graded `return_status()` | Decides what phase each week is and why, and how to come back after days off |
 | `plan.py` | Session classification (endurance/SST/VO2/run/weights; runs as quality/long/easy), planned vs done per week, plan summary for prompts (with the 7-day plan) | The plan card and the coach's view of "what's left this week" |
 | `progression.py` | Progression levels: dose ladders per quality type, the replay of sessions done (interval detection, HR zones, compliance, RPE), the next dose | Sizes every quality session from what was actually done |
+| `nutrition.py` | Fueling per workout: carbs before, carbs per hour during, protein and carbs after, from duration, intensity, sport and weight | The `Fuel:` line on every workout |
 | `durability.py` | Durability: steady-ride heart-rate drift, the aerobic-base test for Build, best power after 15 kJ/kg from the power stream (cached) | Fatigue resistance as a marker, and when Build can start |
 | `progress.py` | The progress check: 4-week performance markers, trends, verdict and diagnosis per sport, the stimulus change when progress stalls, its judgement; `state/progress.json` | Makes sure the training produces progress, not just load |
 | `push.py` | Push experiments: time-boxed load above the plan, the ceiling from a CTL ramp and the benchmark years, a daily check against readiness and the injury checks, a result per push | Lets the athlete try more without changing the plan |

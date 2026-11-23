@@ -138,3 +138,9 @@ def test_long_ride_variants_parse(detail):
     w = W.build_workout(session("long_ride", detail, hard=False), DAY, WEEK, "green")
     total, _, problems = W.parse_check(w["description"])
     assert problems == [] and total == w["moving_time_sec"]
+
+
+def test_workout_starts_with_fuel_line():
+    w = W.build_workout(session("bike_q", BIKE_DETAILS[4]), DAY, WEEK, "green")
+    first = w["description"].split("\n\n")[0]
+    assert first.splitlines()[-1].startswith("Fuel: ~105 g carbs 2-3 h before")

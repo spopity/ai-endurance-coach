@@ -471,13 +471,14 @@ def describe(kind: str, info: dict, t: dict, day: dict, first_ride: bool = False
 def durability_test_text(t: dict, day: dict) -> str:
     """Zone 2 until 15 kJ/kg of work, then 20 min all-out (core/durability.py measures it)."""
     from core.durability import LATE_KJ_PER_KG
+    from core.nutrition import carbs_per_hour
     kj = round(LATE_KJ_PER_KG * (t.get("weight") or 72))
     z2_watts = 0.65 * (t.get("ftp") or 250)
     z2_min = int(round(kj * 1000 / z2_watts / 60 / 5) * 5)
     total = z2_min + 5 + 20 + 10
     return (f"Durability test (~{total} min): Zone 2 ({_w(t, 0.60, 0.72)}) until {kj} kJ (15 kJ/kg, about "
-            f"{z2_min} min), 5 min easy, then 20 min all-out, evenly paced; 10 min easy cool-down. Fuel 80 g "
-            "carbs/h from the start. Name the activity 'Durability test'")
+            f"{z2_min} min), 5 min easy, then 20 min all-out, evenly paced; 10 min easy cool-down. Fuel "
+            f"{carbs_per_hour('ride', total, True)} g carbs/h from the start. Name the activity 'Durability test'")
 
 
 def _describe(kind: str, info: dict, t: dict, day: dict, first_ride: bool, first_run: bool, run_limit: str,
@@ -501,7 +502,7 @@ def _describe(kind: str, info: dict, t: dict, day: dict, first_ride: bool, first
         mins = long_ride_minutes(t.get("longest_ride_min"), deload, (t.get("emphasis") or {}).get("bike") == "volume")
         if info.get("_durability_test") and not easy_only:
             return durability_test_text(t, day)
-        text = f"{_cap(mins, day)} in Zone 2 ({z2}), steady, fuel 60-80 g carbs/h"
+        text = f"{_cap(mins, day)} in Zone 2 ({z2}), steady"
         if info.get("phase") in QUALITY_PHASES and not deload and not easy_only:
             text += (f"; in the last 40 min: 2x10 min sweet spot ({_w(t, 0.88, 0.94)}), 5 min easy between - "
                      "fatigue resistance (durability)")

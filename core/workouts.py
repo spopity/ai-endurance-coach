@@ -18,6 +18,8 @@ Workout text (Intervals.icu workout builder syntax):
   athlete's text must come back as an N-rep block with an M-long step, and the total must fit
   a total the text states. Anything failing falls back to the plain text. Conversions are
   cached in state/workouts/pinned.json by text + FTP + HR zones; failures retry after an hour,
+- every workout starts with a fueling line (core/nutrition.py): carbs before / per hour during
+  / protein and carbs after, from duration, intensity and weight,
 - amber readiness drops one rep of the main set and adds the warm-up test; a "max N min" day
   shortens warm-up/cool-down first, then drops reps; red readiness is already short and easy
   in the plan.
@@ -44,6 +46,7 @@ from datetime import date, datetime, timedelta
 import requests
 
 from core.db import load_env
+from core.nutrition import fuel
 from core.schedule import TZ, _week_kind, build as build_schedule
 
 logger = logging.getLogger("AI_COACH_V1.workouts")
@@ -175,7 +178,7 @@ def _ride_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | Non
         z2 = int(m.group(1)) if m else 90
         return ("Durability test", [
             ("Warmup", 1, [(600, "Ramp 50-65% 90rpm", "")]),
-            ("Endurance", 1, [(max(600, z2 * 60 - 600), "60-72% 85-95rpm", "Zone 2 until the kJ in the plan, fuel 80 g/h")]),
+            ("Endurance", 1, [(max(600, z2 * 60 - 600), "60-72% 85-95rpm", "Zone 2 until the kJ in the plan")]),
             ("Easy", 1, [(300, "50-55%", "")]),
             ("Test", 1, [(1200, "95-110%", "All-out 20 min, even pacing")]),
             ("Cooldown", 1, [(600, "50%", "")])])
@@ -186,10 +189,10 @@ def _ride_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | Non
             mins = min(mins, max_min) if max_min else mins
             return (f"Long ride {mins} min + 2x10 SS", [
                 ("Warmup", 1, [(900, "Ramp 50-65% 90rpm", "")]),
-                ("Endurance", 1, [(max(600, (mins - 50) * 60), "60-72% 85-95rpm", "Fuel 60-80 g carbs/h")]),
+                ("Endurance", 1, [(max(600, (mins - 50) * 60), "60-72% 85-95rpm", "")]),
                 ("Late efforts", 2, [(600, "88-94%", "Sweet spot on tired legs"), (300, "55%", "Easy")]),
                 ("Cooldown", 1, [(300, "50%", "")])])
-        return (f"Long ride {mins} min Z2", _steady(mins, "60-72% 85-95rpm", "50-60%", max_min, "Fuel 60-80 g carbs/h"))
+        return (f"Long ride {mins} min Z2", _steady(mins, "60-72% 85-95rpm", "50-60%", max_min))
     # easy ride
     if deload:
         return ("Easy ride 50 min", _steady(50, "50-68%", "50%", max_min))
@@ -437,6 +440,8 @@ def build_workout(s: dict, day: dict, week: dict, readiness: str) -> dict:
             notes.append(WARMUP_TEST)
     if sport == "ride" and structured:
         text = scale_percent(text, _ftp_scale())
+    hard_long = bool(re.search(r"sweet spot|all-out|threshold", s["detail"] or "", re.I))
+    notes.append(fuel(sport, minutes, bool(s["hard"]) or hard_long, _weight())["text"])
     header = "\n".join(notes)
     description = (header + "\n\n" if header else "") + text
     return {
@@ -450,6 +455,26 @@ def build_workout(s: dict, day: dict, week: dict, readiness: str) -> dict:
 # --- FTP: Intervals.icu reads % of its own set FTP; the plan trains on the training FTP ---
 
 PERCENT_RE = re.compile(r"(\d+)(?:-(\d+))?%")
+
+
+def _weight() -> float | None:
+    """The athlete's weight (kg) for the fueling line; None when unknown (a default is used)."""
+    from core.overview import cached
+
+    def compute():
+        from core.db import get_connection
+        from core.metrics import load_athlete_profile
+        conn = get_connection()
+        try:
+            return load_athlete_profile(conn).get("weight_kg")
+        finally:
+            conn.close()
+    try:
+        w = cached("workout_weight", 3600, compute)
+        return float(w) if w else None
+    except Exception as e:
+        logger.warning(f"Weight unavailable for fueling, using the default: {e}")
+        return None
 
 
 def _ftp_scale() -> float:

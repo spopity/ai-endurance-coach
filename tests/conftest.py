@@ -28,6 +28,7 @@ def _no_ftp_lookup(monkeypatch):
     """Workouts scale % targets to the training FTP from the database - not in tests."""
     from core import workouts
     monkeypatch.setattr(workouts, "_ftp_scale", lambda: 1.0)
+    monkeypatch.setattr(workouts, "_weight", lambda: 70.0)
 
 
 @pytest.fixture
