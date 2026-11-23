@@ -26,6 +26,7 @@ from core.overview import query
 from core.focus import get_focus
 from core.next_session import get_or_decide, session_line
 from core.gym import gym_focus
+from core.nutrition import without_fuel
 from core.plan import RIDE_TYPES, RUN_TYPES, classify
 from core.readiness import current_readiness
 
@@ -215,7 +216,7 @@ def planned_for(a: dict) -> str | None:
     pushed = _pushed_workout(a)
     if pushed:   # the exact workout on Intervals.icu, and how much of it was done
         done = f" Intervals.icu compliance: {pushed['compliance']:.0f}%." if pushed["compliance"] is not None else ""
-        return (f"{pushed['name']} (pushed to the watch). Steps:\n{pushed['description']}\n{done}"
+        return (f"{pushed['name']} (pushed to the watch). Steps:\n{without_fuel(pushed['description'])}\n{done}"
                 " Under 80% means the planned session wasn't completed - say so honestly, with humour.")
     day = a["start_time"].astimezone(LOCAL_TZ).date()
     try:

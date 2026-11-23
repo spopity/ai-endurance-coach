@@ -33,3 +33,12 @@ def test_gym_protein_only():
 
 def test_unknown_weight_uses_default():
     assert fuel("ride", 45, False, None)["after"] == "20 g protein"
+
+
+def test_strava_comparison_gets_the_steps_without_fuel():
+    from core.nutrition import without_fuel
+    desc = fuel("ride", 120, True, 70)["text"] + "\n\nWarmup\n- 15m 50-60%\n\nMain set 3x\n- 10m 95-100%"
+    out = without_fuel(desc)
+    assert "Fuel" not in out and "carbs" not in out
+    assert out.startswith("Warmup") and "- 10m 95-100%" in out
+    assert without_fuel("Amber note\nFuel: x\n\n- 5m 50%") == "Amber note\n\n- 5m 50%"

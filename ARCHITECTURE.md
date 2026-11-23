@@ -438,6 +438,8 @@ text, and goes onto the Intervals.icu calendar **only when the athlete taps Push
     long sessions.
 
   The steps carry no fuel cues of their own, and the durability test's carbs/h come from the same rule.
+  The Strava note's plan comparison (§4.7) gets the steps without this line (`nutrition.without_fuel`):
+  the note is public and the grams come from body weight.
 - **Readiness and time:** amber drops one rep of the main set and adds the warm-up test. A
   "max N min" day shortens the warm-up and cool-down first, then drops reps.
 - **Push:** `POST /api/v1/athlete/{id}/events` with category `WORKOUT` and `external_id`
@@ -654,7 +656,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (110 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (111 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |

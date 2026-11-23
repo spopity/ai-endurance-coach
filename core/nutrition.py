@@ -15,6 +15,7 @@ Numbers only, from the session's duration, intensity, sport and the athlete's we
 """
 
 DEFAULT_WEIGHT_KG = 72
+PREFIX = "Fuel: "
 FLUIDS_FROM_MIN = 90
 
 
@@ -48,4 +49,10 @@ def fuel(sport: str, minutes: int | None, hard: bool, weight_kg: float | None = 
     after = f"{protein} g protein" + (f" + {_r5(w)} g carbs within 1 h" if demanding else "")
     parts = [before] + ([f"during {during}"] if during else []) + [f"after {after}"]
     return {"before": before, "during": during, "after": after, "carbs_per_hour": cph,
-            "text": "Fuel: " + " · ".join(parts)}
+            "text": PREFIX + " · ".join(parts)}
+
+
+def without_fuel(description: str | None) -> str:
+    """A workout description minus its fueling line - for places that only want the session
+    (the public Strava note: the grams come from body weight, and nobody knows what was eaten)."""
+    return "\n".join(l for l in (description or "").split("\n") if not l.startswith(PREFIX)).strip()
