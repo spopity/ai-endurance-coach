@@ -122,6 +122,12 @@ def upcoming_plan(weeks: int = 8) -> list[dict]:
     done, load_so_far = week_done(this_monday)
     races = _races_by_week()
     mode = get_focus()["mode"]
+    try:
+        from core import testing   # lazy: it reads core.schedule, which imports this module
+        tests = testing.calendar(weeks)
+    except Exception as e:
+        logger.warning(f"Test calendar unavailable: {e}")
+        tests = []
 
     out = []
     for i in range(weeks):
@@ -142,6 +148,8 @@ def upcoming_plan(weeks: int = 8) -> list[dict]:
             "done": done if current else None,
             "load": load_so_far if current else None,
             "races": races.get(start, []),
+            "tests": [{"test": x["test"], "title": x["title"], "why": x["why"]} for x in tests
+                      if x["week"] == start.isoformat()],
         })
     return out
 
@@ -174,6 +182,12 @@ def plan_summary() -> str:
         lines.append(f"A NEW week starts tomorrow (from {next_week['week']}) - if the next session isn't today, "
                      f"plan it for that week: {describe(next_week)} "
                      "Planned sessions: " + ", ".join(f"{v} {k}" for k, v in (next_week["sessions"] or {}).items() if v) + ".")
+    try:
+        from core import testing, thresholds
+        lines.append(thresholds.summary())
+        lines.append(testing.summary())
+    except Exception as e:
+        logger.warning(f"Thresholds / test calendar unavailable: {e}")
     try:
         from core.schedule import summary as schedule_summary  # lazy: core.schedule imports this module
         lines.append("NEXT 7 DAYS (the rolling plan - the next session is its first day):\n" + schedule_summary())

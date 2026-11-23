@@ -9,7 +9,10 @@ buttons. Pushing creates a planned WORKOUT event on Intervals.icu from the worko
 can be downloaded as .zwo/.fit/.mrc from there).
 
 Workout text (Intervals.icu workout builder syntax):
-- rides use % of FTP (Intervals' own FTP setting), runs use Intervals' run HR zones ("Z2 HR"),
+- rides use % of FTP (Intervals' own FTP setting), runs use Intervals' run HR zones ("Z2 HR");
+  Zone 2 rides go up to just under the measured LT1 (core/thresholds.py), sub-threshold runs use
+  % of LTHR ("94-97% LTHR"), the FTP test's warm-up is a 4-step LT1 ramp, the CS test is
+  3 + 9 min all-out,
 - gym sessions become WeightTraining events with the prescription as text, no steps,
 - a pinned session (the athlete's own words) is converted to steps by Gemini (temperature 0,
   told to keep exactly what was written: reps, durations, intensities; watts -> % FTP, bpm ->
@@ -123,6 +126,7 @@ def _interval_session(wu: int, main: list, reps: int, cd: int, wu_target: str, c
 # progression levels in core/progression.py): "Sweet spot 3x15 min at ..., 5 min easy between".
 QUALITY_RE = re.compile(r"^(VO2max|Tempo|Sweet spot|Threshold|Hills)\s+(\d+)x(\d+)\s*(min|s)\b")
 RECOVERY_RE = re.compile(r"(\d+) min (?:easy|jog) between")
+SUB_T_TARGET = "94-97% LTHR"   # core/schedule.SUB_T_LTHR
 BIKE_TARGETS = {"VO2max": "106-120% 95rpm", "Tempo": "76-87%", "Sweet spot": "88-94%", "Threshold": "95-105%"}
 
 
@@ -151,11 +155,28 @@ def _steady(minutes: int, target: str, wu_target: str, max_min: int | None, cue:
             ("Cooldown", 1, [(cd * 60, wu_target, "")])]
 
 
+def _z2_hi() -> int:
+    """Top of the Zone 2 steps in % FTP: 3 points under the plan's Zone 2 top (core/thresholds.z2_top,
+    just under LT1), so the watch's band sits inside the zone; 72 without a measured LT1."""
+    from core.overview import cached
+
+    def compute():
+        from core.schedule import _targets
+        return round((_targets().get("z2_top") or 0.75) * 100) - 3
+    try:
+        return cached("workout_z2_hi", 300, compute)
+    except Exception as e:
+        logger.warning(f"Zone 2 top unavailable, using 72%: {e}")
+        return 72
+
+
 def _ride_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | None) -> tuple[str, list]:
     k, detail = s["kind"], s["detail"]
+    z2 = _z2_hi()
     if k == "ftp_test":
         return ("FTP test 20 min", [
-            ("Warmup", 1, [(600, "Ramp 50-70% 90rpm", "")]),
+            ("Aerobic steps", 1, [(240, "55% 90rpm", "Steady, seated - LT1 steps"), (240, "65% 90rpm", "Steady"),
+                                  (240, "72% 90rpm", "Steady"), (240, "80% 90rpm", "Steady")]),
             ("Openers", 3, [(60, "100% 110rpm", "Fast pedalling"), (60, "50%", "Easy")]),
             ("Blow-out", 1, [(300, "105-110%", "Hard"), (600, "50%", "Easy")]),
             ("Test", 1, [(1200, "95-110%", "All-out 20 min, even pacing - start at FTP and build")]),
@@ -171,14 +192,14 @@ def _ride_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | Non
                 return name, _interval_session(900, [(on, target, ""), (on, "50%", "Easy")], reps, 600, min_reps=3, **args)
             if title == "Tempo":
                 return name, _interval_session(900, [(on, target, ""), (off, "55%", "Easy")], reps, 600,
-                                               extra=("Endurance", 1, [(600, "62-72%", "")]), min_reps=1, **args)
+                                               extra=("Endurance", 1, [(600, f"62-{z2}%", "")]), min_reps=1, **args)
             return name, _interval_session(900, [(on, target, ""), (off, "55%", "Easy")], reps, 600, **args)
     if k == "long_ride" and detail.startswith("Durability test"):
         m = re.search(r"about (\d+) min", detail)
-        z2 = int(m.group(1)) if m else 90
+        z2_min = int(m.group(1)) if m else 90
         return ("Durability test", [
             ("Warmup", 1, [(600, "Ramp 50-65% 90rpm", "")]),
-            ("Endurance", 1, [(max(600, z2 * 60 - 600), "60-72% 85-95rpm", "Zone 2 until the kJ in the plan")]),
+            ("Endurance", 1, [(max(600, z2_min * 60 - 600), f"60-{z2}% 85-95rpm", "Zone 2 until the kJ in the plan")]),
             ("Easy", 1, [(300, "50-55%", "")]),
             ("Test", 1, [(1200, "95-110%", "All-out 20 min, even pacing")]),
             ("Cooldown", 1, [(600, "50%", "")])])
@@ -189,10 +210,10 @@ def _ride_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | Non
             mins = min(mins, max_min) if max_min else mins
             return (f"Long ride {mins} min + 2x10 SS", [
                 ("Warmup", 1, [(900, "Ramp 50-65% 90rpm", "")]),
-                ("Endurance", 1, [(max(600, (mins - 50) * 60), "60-72% 85-95rpm", "")]),
+                ("Endurance", 1, [(max(600, (mins - 50) * 60), f"60-{z2}% 85-95rpm", "")]),
                 ("Late efforts", 2, [(600, "88-94%", "Sweet spot on tired legs"), (300, "55%", "Easy")]),
                 ("Cooldown", 1, [(300, "50%", "")])])
-        return (f"Long ride {mins} min Z2", _steady(mins, "60-72% 85-95rpm", "50-60%", max_min))
+        return (f"Long ride {mins} min Z2", _steady(mins, f"60-{z2}% 85-95rpm", "50-60%", max_min))
     # easy ride
     if deload:
         return ("Easy ride 50 min", _steady(50, "50-68%", "50%", max_min))
@@ -201,25 +222,27 @@ def _ride_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | Non
         return ("Endurance + sprints", [
             ("Warmup", 1, [(900, "Ramp 50-70% 90rpm", "")]),
             ("Sprints", 7, [(15, "150%", "Sprint"), (165, "55%", "Easy")]),
-            ("Endurance", 1, [(max(300, mins * 60 - 900 - 1260 - 600), "62-72% 85-95rpm", "")]),
+            ("Endurance", 1, [(max(300, mins * 60 - 900 - 1260 - 600), f"62-{z2}% 85-95rpm", "")]),
             ("Cooldown", 1, [(600, "50%", "")])])
     if "2 min hard" in detail:
         mins = min(70, max_min or 70)
         return ("Endurance + 5x2 min", [
             ("Warmup", 1, [(900, "Ramp 50-70% 90rpm", "")]),
             ("Hard efforts", 5, [(120, "106-115%", ""), (180, "55%", "Easy")]),
-            ("Endurance", 1, [(max(300, mins * 60 - 900 - 1500 - 600), "62-72% 85-95rpm", "")]),
+            ("Endurance", 1, [(max(300, mins * 60 - 900 - 1500 - 600), f"62-{z2}% 85-95rpm", "")]),
             ("Cooldown", 1, [(600, "50%", "")])])
-    return ("Endurance ride 65 min", _steady(65, "62-72% 85-95rpm", "50-60%", max_min))
+    return ("Endurance ride 65 min", _steady(65, f"62-{z2}% 85-95rpm", "50-60%", max_min))
 
 
 def _run_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | None) -> tuple[str, list]:
     k, detail = s["kind"], s["detail"]
     if k == "run_test":
-        return ("Run test 30 min", [
+        return ("CS test 3+9 min", [
             ("Warmup", 1, [(900, "Z2 HR", "Easy")]),
             ("Strides", 4, [(20, "Z5 HR", "Stride"), (40, "Z1 HR", "Walk/jog")]),
-            ("Test", 1, [(1800, "Z4 HR", "All-out 30 min, even pace - lap at 10 min")]),
+            ("Test 3 min", 1, [(180, "Z5 HR", "All-out 3 min, even pace")]),
+            ("Recovery", 1, [(1200, "Z1 HR", "Easy jog or walk - full recovery")]),
+            ("Test 9 min", 1, [(540, "Z5 HR", "All-out 9 min, even pace - same route")]),
             ("Cooldown", 1, [(600, "Z1 HR", "")])])
     if k == "run_q" and not detail.startswith("Easy run"):
         strides = ("Strides", 4, [(20, "Z5 HR", "Stride"), (40, "Z1 HR", "Walk/jog")])
@@ -234,7 +257,8 @@ def _run_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | None
             b = _interval_session(600, [(on, "Z3 HR", "Tempo"), (off, "Z1 HR", "Jog")], reps, 480, min_reps=1, **args)
             name = f"Tempo run {reps}x{_reps_unit(on)}"
         else:
-            b = _interval_session(600, [(on, "Z4 HR", "Threshold"), (off, "Z1 HR", "Jog")], reps, 480, **args)
+            b = _interval_session(600, [(on, SUB_T_TARGET, "Sub-threshold, controlled"), (off, "Z1 HR", "Jog")],
+                                  reps, 480, **args)
             name = f"Threshold run {reps}x{_reps_unit(on)}"
         return name, b[:1] + [strides] + b[1:]
     m = re.match(r"(?:Easy run )?(\d+)", detail)

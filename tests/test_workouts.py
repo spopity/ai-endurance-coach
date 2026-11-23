@@ -1,4 +1,6 @@
 """Workout text for Intervals.icu (core/workouts.py) and the checks on converted pinned sessions."""
+import re
+
 import pytest
 
 from core import workouts as W
@@ -21,7 +23,8 @@ BIKE_DETAILS = [
 RUN_DETAILS = [
     ("run_q", "Tempo 2x12 min at 150-157 bpm, 3 min jog between; 10 min easy warm-up with strides, 8 min cool-down"),
     ("run_q", "Hills 8x60 s hard uphill, jog down; 10 min easy warm-up with strides, 8 min cool-down"),
-    ("run_q", "Threshold 3x8 min at 158-166 bpm, 2 min jog between; 10 min easy warm-up with strides"),
+    ("run_q", "Threshold 5x6 min sub-threshold at 157-162 bpm (never above 162), 1 min jog between; "
+              "10 min easy warm-up with strides"),
     ("long_run", "60-75 min easy, HR under 149, conversational"),
     ("run", "35-45 min easy, HR under 149, finish with 6 x 20 s strides"),
 ]
@@ -39,8 +42,33 @@ def test_bike_workouts_parse_cleanly(detail):
 def test_run_workouts_use_hr_zones(kind, detail):
     w = W.build_workout(session(kind, detail, "run", hard=kind == "run_q"), DAY, WEEK, "green")
     total, _, problems = W.parse_check(w["description"])
-    assert problems == [] and "HR" in w["description"] and "%" not in w["description"]
+    # Heart rate only: HR zones, or % of LTHR for sub-threshold reps - never % of FTP.
+    assert problems == [] and "HR" in w["description"] and "%" not in re.sub(r"\d+-\d+% LTHR", "", w["description"])
     assert w["type"] == "Run"
+
+
+def test_sub_threshold_run_holds_just_under_lthr():
+    w = W.build_workout(session("run_q", RUN_DETAILS[2][1], "run"), DAY, WEEK, "green")
+    assert "Main set 5x" in w["description"] and "6m 94-97% LTHR" in w["description"]
+    assert "- Jog 1m Z1 HR" in w["description"]
+
+
+def test_ftp_test_warms_up_with_lt1_steps():
+    w = W.build_workout(session("ftp_test", "test"), DAY, WEEK, "green")
+    steps = re.findall(r"- .*?4m (\d+)% 90rpm", w["description"])
+    assert steps == ["55", "65", "72", "80"]
+
+
+def test_cs_test_has_a_3_and_a_9_minute_effort():
+    w = W.build_workout(session("run_test", "test", "run"), DAY, WEEK, "green")
+    assert "3m Z5 HR" in w["description"] and "9m Z5 HR" in w["description"]
+    assert "20m Z1 HR" in w["description"]   # full recovery between
+
+
+def test_zone_2_follows_lt1(monkeypatch):
+    monkeypatch.setattr(W, "_z2_hi", lambda: 78)
+    w = W.build_workout(session("long_ride", "120-135 min in Zone 2, steady", hard=False), DAY, WEEK, "green")
+    assert "60-78% 85-95rpm" in w["description"]
 
 
 def test_amber_drops_a_rep_and_adds_the_warm_up_test():
@@ -111,7 +139,7 @@ def test_step_durations(text, seconds):
 def test_test_workouts_parse(kind, sport):
     w = W.build_workout(session(kind, "test", sport), DAY, WEEK, "green")
     total, _, problems = W.parse_check(w["description"])
-    assert problems == [] and 45 * 60 <= total <= 75 * 60
+    assert problems == [] and 55 * 60 <= total <= 75 * 60
 
 
 def test_long_run_follows_the_plan_minutes():

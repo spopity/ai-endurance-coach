@@ -1,6 +1,7 @@
 """
 Recomputes the adaptive training plan (core/periodization.py) from the training
-actually done and rewrites training_blocks, then runs the progress check
+actually done and rewrites training_blocks, then measures the thresholds
+(core/thresholds.py: LT1 from DFA-alpha1, critical speed) and runs the progress check
 (core/progress.py: markers, verdicts, a new stimulus where progress stalled).
 Runs nightly after the Intervals.icu sync; safe to run any time.
 
@@ -19,7 +20,7 @@ sys.path.insert(0, ROOT)
 from core.db import get_connection, load_env  # noqa: E402
 from core.notify import notify_telegram  # noqa: E402
 from core.periodization import compute_plan, update_plan  # noqa: E402
-from core import progress  # noqa: E402
+from core import progress, thresholds  # noqa: E402
 
 
 def label(r: dict | None) -> str:
@@ -56,6 +57,15 @@ def main():
             f"📅 Training plan adapted: this week is now {label(now)} (was {label(before)}).\n"
             f"Why: {now['notes']}.\n"
             f"Target {now['target_weekly_load_min']:.0f}-{now['target_weekly_load_max']:.0f} TSS. {now['primary_focus']}"))
+
+    try:
+        before_th = thresholds._read(thresholds.STATE)
+        th = thresholds.update()
+        print("\n" + thresholds.summary(th))
+        if args.notify and (msg := thresholds.changes(before_th, th)):
+            notify_telegram(load_env(), msg)
+    except Exception as e:
+        print(f"\nThreshold update failed: {e}")
 
     try:
         result = progress.update()

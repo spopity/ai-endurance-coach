@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CalendarRange, Flag } from "lucide-react";
+import { CalendarRange, Flag, FlaskConical } from "lucide-react";
 import { api } from "../api";
 import type { FocusMode, PlanWeek, SessionKind, TrainingFocus } from "../types";
 import { SESSION_META } from "../lib/colors";
@@ -95,6 +95,12 @@ function WeekTile({ w, scale }: { w: PlanWeek; scale: number }) {
         <LoadBar w={w} scale={scale} />
       </div>
       <SessionChips w={w} />
+      {(w.tests ?? []).map((t) => (
+        <div key={t.test} className="flex items-center gap-1 text-[11px] text-violet-300" title={t.why}>
+          <FlaskConical size={11} />
+          <span className="truncate">{t.title}</span>
+        </div>
+      ))}
       {w.races.map((r) => (
         <div key={r.date + r.name} className="flex items-center gap-1 text-[11px] text-orange-300">
           <Flag size={11} />

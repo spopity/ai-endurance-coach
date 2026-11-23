@@ -396,17 +396,18 @@ every sync.
   the weekend; only 7 days are shown.
 - **Day 1 follows readiness:** red means nothing hard and at most 45 min; amber notes
   "trim ~20% + warm-up test" on the hard session. Running limits turn quality runs easy.
-- **Targets:** watts from the training FTP, heart rates from the last run's HR zones, and
-  sets/reps from the progression levels (§4.12): the week's phase picks the session type (tempo in late
+- **Targets:** watts from the training FTP, heart rates from the last run's HR zones, the
+  measured thresholds (§4.6d: Zone 2 up to just under LT1, easy runs under the run LT1,
+  quality runs sub-threshold at 94-97% of LTHR with 1-min jogs, plus a pace from critical
+  speed once a CS test measured it), and sets/reps from the progression levels (§4.12): the week's phase picks the session type (tempo in late
   Base, sweet spot in Build 1-2, threshold in Build 3 and race prep, VO2max for the VO2 slot), the level
   picks the dose.
-- **Tests** replace that week's quality session:
-  - an FTP test (20 min) when the last ride named like one is 6+ weeks old;
-  - a run test (30 min all-out, whose last-20-min HR is the threshold HR) every 8 weeks.
-
-  Never in a deload week, on an amber/red week, within 14 days of an illness or (the run
-  test) under a running limit; one test a week. Both are recognised afterwards by the
-  activity name (`FTP_TEST_NAME`, `RUN_TEST_NAME`).
+- **Tests** come from the test calendar (§4.6d), which picks the week from the long-term plan;
+  the 7-day plan puts the test in place of that week's quality session of its sport (in a
+  recovery week, in place of an easy ride, on Fri-Sun). Day-level rules: never within 14 days
+  of an illness, never on an amber/red first day (a later day of the week is fine), the CS test
+  not under a running limit. Both are recognised afterwards by the activity name
+  (`FTP_TEST_NAME`, `RUN_TEST_NAME`: "FTP test", "CS test"; a newly set FTP counts as tested).
 - **Long-ride progression:** 15 min over the longest ride of the last 30 days (30 min while the
   progress check asks for volume, §4.12), between 2 and 4 h; 75-90 min in a deload week. In Build
   and race prep it ends with 2x10 min sweet spot in the last 40 min (durability), and every 6
@@ -423,6 +424,46 @@ every sync.
 - **Where it's used:** `week_ahead` in the coach's context (rule 19: the next session is
   its first day), the local coach's plan summary, the dashboard (`/api/week-ahead`,
   `WeekAheadCard`) and Telegram `/week`.
+
+### 4.6d Thresholds and the test calendar (`core/thresholds.py`, `core/testing.py`)
+
+**Thresholds from the athlete's own data** (nightly, `scripts/update_plan.py`):
+
+- **LT1 from DFA-alpha1.** Intervals.icu keeps the beat-to-beat (RR) intervals of every
+  activity recorded with a chest strap (the `hrv` stream). Each activity is cut into 2-min
+  windows (from minute 10, every 60 s); a window counts when it is stationary (both halves
+  within 4 bpm) and clean (at most 3% artifacts, dropped). The windows of the last 90 days
+  are pooled per sport and binned by heart rate (and power on the bike); LT1 is where the
+  binned median alpha1 first falls through 0.75 (Rogers et al. 2021). Quality gate: the
+  curve must start at 1.0 or more and must not climb back over 0.9 after the crossing -
+  wrist/noisy RR or cadence coupling does that, and such data is reported as unreliable,
+  not used. Per-activity windows are cached (`state/dfa_windows.json`).
+- **Zone 2** goes up to 95% of the LT1 power, kept within 70-82% of FTP; without a measured
+  LT1 power it stays 56-75% (the plan's watts, and the workouts' % steps 3 points below).
+  Easy runs stay under the run LT1 when it's measured, else under the top of HR Z2.
+- **Critical speed (run)** from a CS test: the best 3- and 9-min distances of that day
+  (Intervals.icu pace curve), CS = (D9 - D3) / 360 s, D' = D3 - CS x 180 s; implausible
+  results (D' outside 50-450 m) are reported, not used. Without a test, Intervals.icu's CS
+  model of the last 90 days of training runs is shown as a floor (not all-out, so too low)
+  and gives no paces.
+- `state/thresholds.json` holds the result; the plan context gets a "Thresholds" line, and
+  Telegram is told when Zone 2 moves or a CS test is read.
+
+**The test calendar** places the tests by the long-term plan (training_blocks), so a test
+lands where it is worth most and moves with the plan when a recovery week moves:
+
+- **FTP test** (20 min, its warm-up a 4-step ramp at 55/65/72/80% FTP that also feeds LT1): at
+  the **end of a recovery week** - fresh legs, and the new FTP sets the next block's watts.
+- **CS test** (15 min easy + strides, 3 min all-out, 20 min easy, 9 min all-out): the quality
+  run of the **first loading week after a recovery week**.
+- Due at a slot when the last test is 35+ days old (about every second recovery week), or 21+
+  days when the next block starts a new phase (Base -> Build -> Race prep). Never tested: the
+  first slot. A missed slot is caught up the following week as its quality session; past 63
+  days (FTP: the 8-week eFTP rule plus one recovery week) / 70 days (CS) it no longer waits
+  for a recovery week. Never in a taper or race week; one test a week (FTP first).
+- The 7-day plan asks `week_tests()` per week, projected from the current week; `calendar()`
+  shows the next weeks on the dashboard plan card, in the coach's context and as "🧪 Next tests"
+  under Telegram `/week`.
 
 ### 4.6c Structured workouts on Intervals.icu (`core/workouts.py`)
 
@@ -694,7 +735,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (136 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (157 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed). Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |
@@ -759,6 +800,8 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `briefing.py` | The morning briefing: computed facts (readiness, HRV, load vs plan, warnings, race countdown) plus the shared next-session decision, re-checked that morning | The daily Telegram message |
 | `strava.py` | A minimal Strava client: token refresh, list/get/update activities, scope check | Used by name sync and coach notes |
 | `workouts.py` | Turns a plan day's sessions into Intervals.icu workout text (power % FTP, HR zones, reps trimmed for amber / short days) and pushes, updates or removes them on the Intervals.icu calendar | Workouts on the watch / Zwift with one tap, never without it |
+| `testing.py` | The test calendar: FTP test at the end of a recovery week, CS test as the first quality run after it, by the long-term plan (§4.6d) | Tests land where they are worth most and move with the plan |
+| `thresholds.py` | LT1 from DFA-alpha1 (chest-strap RR data), Zone 2 from it, critical speed from a CS test; `state/thresholds.json` (§4.6d) | Zones from the athlete's own physiology, not fixed % of FTP |
 | `schedule.py` | The rolling 7-day plan: lays out what's left of the week's session mix around availability, readiness and the hard/easy rules, with concrete targets | One day-by-day plan for the coach, dashboard and Telegram; adapts after every sync |
 | `strava_notes.py` | Builds, merges and posts Strava coach notes for every activity type (facts + a funny Gemini comment: planned vs done and the training benefit), with privacy rules and `#nocoach` | The public coach voice on Strava |
 | `notify.py` | Sends a plain Telegram message from scripts and timers | Alerts from the health check, sync check and name sync |
@@ -785,7 +828,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 |---|---|---|
 | `create_database.py` | Creates `athlete_twin_v2` if missing and applies any migration not yet recorded in `schema_migrations` | Database setup and upgrades |
 | `setup_readonly_role.py` | Enables login for `coach_reader` with a random password and writes `READONLY_DATABASE_URL` to `.env` (re-run to rotate) | Run once after migration 014 |
-| `update_plan.py` | Recomputes the adaptive plan, then runs the progress check (`--dry-run` to preview, `--notify` for Telegram on a phase change or a stimulus starting/ending) | Keeps `training_blocks` in step with the training done |
+| `update_plan.py` | Recomputes the adaptive plan, measures the thresholds (LT1, critical speed), then runs the progress check (`--dry-run` to preview, `--notify` for Telegram on a phase change or a stimulus starting/ending) | Keeps `training_blocks` in step with the training done |
 | `post_strava_notes.py` | CLI: post pending notes, `--dry-run`, `--activity` for one activity | Run by the Strava-notes timer |
 | `sync_strava_names.py` | Matches Strava (last 6 months, `--full` for all) to local activities and pushes Strava names to Intervals.icu and the database | Run by the nightly name timer |
 | `backfill_strava_history.py` | One-time: uploads Strava-only activities to Intervals.icu (TCX from streams), links double recordings, re-imports the DB; re-runnable, report in `state/strava_backfill_report.txt` | Run once by hand (2026-10-11) |
@@ -875,7 +918,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env` | Real secrets and settings (see `.env.example`) |
 | `credentials.json`, `token.json` | Google Calendar OAuth (life agent) |
 | `state/strava_tokens.json`, `state/withings_tokens.json` | OAuth tokens written by the auth scripts and refreshed by the app |
-| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `workouts/pinned.json` (pinned sessions converted to steps), `health_alerts.json` (open problems of the hourly health check), `backup_nas.json` (last copy to the NAS), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
+| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `workouts/pinned.json` (pinned sessions converted to steps), `health_alerts.json` (open problems of the hourly health check), `thresholds.json` + `dfa_windows.json` (LT1 / critical speed and the per-activity DFA-alpha1 windows, §4.6d), `backup_nas.json` (last copy to the NAS), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
 | `logs/` | Rotating logs for each process, plus `sync-cron.log` |
 | `venv/` | The Python virtualenv |
 | `/var/backups/ai-coach/` | Encrypted nightly backups (`db-*.dump.enc`, `state-*.tar.gz.enc`), coach-only (0600) |

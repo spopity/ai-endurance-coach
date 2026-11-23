@@ -1,7 +1,7 @@
 """The rolling 7-day plan (core/schedule.py): the hard/easy rules and how it adapts."""
 from datetime import date, timedelta
 
-from conftest import MONDAY, day_index, done, entry, kinds
+from conftest import BUILD_MIX, MONDAY, day_index, done, entry, kinds
 
 from core.schedule import SPORT
 
@@ -179,37 +179,72 @@ def test_unknown_or_other_sport_pairing_is_ignored(monkeypatch):
 
 # --- tests and long-run progression ---
 
-def test_ftp_test_replaces_a_quality_ride_when_due(week):
-    plan = week(last_ftp_test=MONDAY - timedelta(days=50))
-    ks = [k for d in plan["days"] for k in (s["kind"] for s in d["sessions"])]
-    assert ks.count("ftp_test") == 1 and ks.count("bike_q") == 1
+DELOAD_MIX = {"endurance": 3, "run": 2, "weights": 2}
+LAST_WEEK = MONDAY - timedelta(days=7)
 
 
-def test_no_test_soon_after_illness_or_on_amber(week):
-    ill = [MONDAY - timedelta(days=5)]
-    for kw in ({"entries": [entry("sick", ill)]}, {"readiness": {"level": "amber"}}):
-        plan = week(last_ftp_test=MONDAY - timedelta(days=50), last_run_test=None, **kw)
-        first_week = [k for d in plan["days"] if date.fromisoformat(d["date"]) < MONDAY + timedelta(days=7)
-                      for k in (s["kind"] for s in d["sessions"])]
-        assert "ftp_test" not in first_week and "run_test" not in first_week, kw
+def first_week(plan) -> list[str]:
+    return [k for d in plan["days"] if date.fromisoformat(d["date"]) < MONDAY + timedelta(days=7)
+            for k in (s["kind"] for s in d["sessions"])]
 
 
-def test_no_test_in_a_deload_week(week):
-    plan = week(mix={"endurance": 3, "run": 2, "weights": 2}, deload=True, last_ftp_test=None, last_run_test=None)
-    assert not {"ftp_test", "run_test"} & set(all_kinds(plan))
+def test_ftp_test_at_the_end_of_the_recovery_week(week):
+    plan = week(deload=True, phase="Recovery", mix=DELOAD_MIX, last_ftp_test=MONDAY - timedelta(days=40),
+                weeks={LAST_WEEK: ("Build", False, BUILD_MIX)})
+    day = next(d for d in plan["days"] if any(s["kind"] == "ftp_test" for s in d["sessions"]))
+    assert date.fromisoformat(day["date"]).weekday() >= 4      # Fri-Sun: fresh legs after the easy week
+    assert "bike_q" not in all_kinds(plan)
 
 
-def test_run_test_replaces_the_quality_run_but_not_when_running_is_limited(week):
-    assert "run_test" in all_kinds(week(last_run_test=None))
-    limited = week(last_run_test=None, readiness={"level": "green", "running": {"limit": "no_hard_run"}})
+def test_recent_ftp_test_skips_a_recovery_week(week):
+    plan = week(deload=True, phase="Recovery", mix=DELOAD_MIX, last_ftp_test=MONDAY - timedelta(days=25),
+                weeks={LAST_WEEK: ("Build", False, BUILD_MIX)})
+    assert "ftp_test" not in all_kinds(plan)
+
+
+def test_no_test_in_an_ordinary_loading_week_unless_late(week):
+    assert "ftp_test" not in first_week(week(last_ftp_test=MONDAY - timedelta(days=50)))
+    late = first_week(week(last_ftp_test=MONDAY - timedelta(days=60)))   # 66 days by Sunday: can't wait
+    assert late.count("ftp_test") == 1 and late.count("bike_q") == 1
+
+
+def test_cs_test_is_the_first_quality_run_after_recovery(week):
+    after = {LAST_WEEK: ("Recovery", True, DELOAD_MIX)}
+    plan = week(last_run_test=MONDAY - timedelta(days=60), weeks=after)
+    assert "run_test" in first_week(plan) and "run_q" not in first_week(plan)
+    limited = week(last_run_test=None, weeks=after, readiness={"level": "green", "running": {"limit": "no_hard_run"}})
     assert "run_test" not in all_kinds(limited)
+
+
+def test_no_test_soon_after_illness(week):
+    plan = week(last_run_test=None, weeks={LAST_WEEK: ("Recovery", True, DELOAD_MIX)},
+                entries=[entry("sick", [MONDAY - timedelta(days=5)])])
+    assert "run_test" not in first_week(plan)
+
+
+def test_amber_keeps_the_test_off_day_one_only(week):
+    plan = week(last_run_test=None, weeks={LAST_WEEK: ("Recovery", True, DELOAD_MIX)},
+                readiness={"level": "amber"})
+    assert "run_test" not in [s["kind"] for s in plan["days"][0]["sessions"]]
+    assert "run_test" in first_week(plan)
+
+
+def test_one_test_a_week(week):
+    # The FTP test was missed at the end of last week's recovery week (catch-up) and the CS test's
+    # slot is this week too: the FTP test goes first, the CS test moves to next week.
+    plan = week(last_ftp_test=MONDAY - timedelta(days=45), last_run_test=None,
+                weeks={LAST_WEEK: ("Recovery", True, DELOAD_MIX)})
+    assert first_week(plan).count("ftp_test") == 1 and "run_test" not in first_week(plan)
+
+
+def test_no_test_in_a_taper(week):
+    plan = week(phase="Taper", last_ftp_test=MONDAY - timedelta(days=80), last_run_test=None)
+    assert not {"ftp_test", "run_test"} & set(first_week(plan))
 
 
 def test_done_test_counts_as_the_weeks_quality(week):
     plan = week(today=MONDAY + timedelta(days=1), done=[done(MONDAY, "ftp_test")], last_ftp_test=MONDAY)
-    first_week = [k for d in plan["days"] if date.fromisoformat(d["date"]) < MONDAY + timedelta(days=7)
-                  for k in (s["kind"] for s in d["sessions"])]
-    assert first_week.count("bike_q") == 1 and "ftp_test" not in first_week
+    assert first_week(plan).count("bike_q") == 1 and "ftp_test" not in first_week(plan)
 
 
 def test_long_run_grows_about_ten_percent():
@@ -225,10 +260,3 @@ def test_long_run_detail_uses_the_progression(week):
     plan = week(longest_run_min=70)
     lr = next(s for d in plan["days"] for s in d["sessions"] if s["kind"] == "long_run")
     assert lr["detail"].startswith("75-80 min")
-
-
-def test_one_test_a_week(week):
-    plan = week(last_ftp_test=None, last_run_test=None)
-    first_week = [k for d in plan["days"] if date.fromisoformat(d["date"]) < MONDAY + timedelta(days=7)
-                  for k in (s["kind"] for s in d["sessions"])]
-    assert first_week.count("ftp_test") + first_week.count("run_test") == 1

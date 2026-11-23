@@ -19,9 +19,12 @@ You reach the coach in three ways:
   (power as % FTP, runs by HR zone). One tap on Push in Telegram or the dashboard puts a
   workout on your Intervals.icu calendar, and from there it syncs to Garmin or Zwift.
   Nothing is pushed without that tap. Sessions you pin yourself are converted to steps too.
-  Intervals.icu's compliance % tells the plan whether a session was really done, an FTP
-  test (every 6 weeks) and a 30-min run test (every 8) are scheduled automatically, the
-  long run grows ~10% at a time, and gym weights progress from what you log (`/gym`).
+  Intervals.icu's compliance % tells the plan whether a session was really done. Tests are
+  placed by the long-term plan: an FTP test (with an aerobic-threshold step warm-up) at the
+  end of a recovery week and a critical-speed run test (3 + 9 min) in the week after. Zone 2
+  is anchored on the aerobic threshold (LT1) measured from chest-strap beat-to-beat data
+  (DFA-alpha1), quality runs are sub-threshold, the long run grows ~10% at a time, and gym
+  weights progress from what you log (`/gym`).
 - **Telegram bot**: a morning briefing and check-in, a two-tap RPE/legs question after
   each hard, long or gym session (the RPE also goes to Intervals.icu), chat with memory, what-if simulations, and Strava note editing. Tell it
   "sick for 3 days", "only 40 min today" or "swap Tuesday's intervals with Thursday's

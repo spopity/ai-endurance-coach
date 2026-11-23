@@ -155,8 +155,8 @@ def ftp_drift(ftp, eftp, profile: dict | None = None) -> dict | None:
         status = "ok"
         message = f"eFTP {eftp:.0f} W agrees with your set FTP {ftp:.0f} W."
     if p.get("ftp_test_due"):
-        message += (f" FTP {when} - a test is due (every {FTP_TEST_DUE_DAYS // 7} weeks); after "
-                    f"{EFTP_FALLBACK_DAYS // 7} weeks without one, targets use eFTP.")
+        message += (f" FTP {when} - the next FTP test is in the test calendar (core/testing.py: the end of a "
+                    f"recovery week); after {EFTP_FALLBACK_DAYS // 7} weeks without one, targets use eFTP.")
         status = "due" if status == "ok" else status
     return {"pct": pct, "status": status, "message": message}
 

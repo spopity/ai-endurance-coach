@@ -29,6 +29,7 @@ def _no_ftp_lookup(monkeypatch):
     from core import workouts
     monkeypatch.setattr(workouts, "_ftp_scale", lambda: 1.0)
     monkeypatch.setattr(workouts, "_weight", lambda: 70.0)
+    monkeypatch.setattr(workouts, "_z2_hi", lambda: 72)
 
 
 @pytest.fixture
@@ -39,15 +40,25 @@ def week(monkeypatch):
             mix: dict | None = None, phase: str = "Build", deload: bool = False, kind: str = "build_2",
             readiness: dict | None = None, last_ftp_test: date | None = date(2026, 11, 10),
             last_run_test: date | None = date(2026, 11, 10), longest_run_min: float | None = None,
-            last_durability_test: date | None = date(2026, 11, 10)):
+            last_durability_test: date | None = date(2026, 11, 10), weeks: dict | None = None,
+            targets: dict | None = None):
+        """`weeks`: {monday: (phase, deload, mix)} for weeks that differ from the default block
+        (the long-term plan around the week: recovery weeks place the tests)."""
         block = {"phase": phase, "is_deload": deload, "primary_focus": "test", "sessions": dict(mix or BUILD_MIX)}
+
+        def week_kind(monday):
+            if weeks and monday in weeks:
+                ph, dl, mx = weeks[monday]
+                return ("recovery" if dl else kind), {"phase": ph, "is_deload": dl, "primary_focus": "test",
+                                                      "sessions": dict(mx)}
+            return kind, dict(block, sessions=dict(block["sessions"]))
         monkeypatch.setattr(schedule.availability, "load", lambda *a, **k: {"entries": entries or [], "history": []})
-        monkeypatch.setattr(schedule, "_week_kind", lambda monday: (kind, dict(block, sessions=dict(block["sessions"]))))
+        monkeypatch.setattr(schedule, "_week_kind", week_kind)
         monkeypatch.setattr(schedule, "_done", lambda start, end: [d for d in (done or []) if start <= d["day"] <= end])
         monkeypatch.setattr(schedule, "_targets", lambda: {
             "ftp": 280.0, "hr": [141, 149, 157, 166], "last_ftp_test": last_ftp_test,
             "last_run_test": last_run_test, "longest_run_min": longest_run_min,
-            "last_durability_test": last_durability_test, "weight": 70.0})
+            "last_durability_test": last_durability_test, "weight": 70.0, **(targets or {})})
         monkeypatch.setattr(schedule, "get_focus", lambda: {"mode": "dual"})
         return schedule.build(today=today, readiness=readiness or {"level": "green"})
     return run

@@ -166,6 +166,7 @@ export interface PlanWeek {
   done: Record<SessionKind, number> | null;
   load: number | null;
   races: { name: string | null; date: string; priority: string | null }[];
+  tests?: { test: string; title: string; why: string }[];
 }
 
 export type FocusMode = "cycling" | "dual";

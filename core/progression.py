@@ -62,9 +62,11 @@ LADDERS = {
                       (5, 300, 300)]},
     "run_tempo": {"sport": "run", "zones": (2, 2), "rpe": 6, "title": "Tempo",
                   "steps": [(2, 600, 180), (2, 720, 180), (2, 900, 180), (3, 720, 180), (2, 1200, 180), (3, 900, 180)]},
+    # Sub-threshold (Norwegian style, core/schedule.sub_threshold): just under LTHR, so more time
+    # at it per session and short 1-min jogs that keep the heart rate up.
     "run_threshold": {"sport": "run", "zones": (3, 6), "rpe": 7, "title": "Threshold",
-                      "steps": [(4, 300, 120), (3, 480, 120), (4, 480, 120), (3, 600, 120), (4, 600, 120),
-                                (3, 720, 180), (2, 1200, 180)]},
+                      "steps": [(5, 300, 60), (6, 300, 60), (4, 480, 60), (6, 360, 60), (5, 480, 60),
+                                (3, 900, 120), (4, 720, 60)]},
     "run_hills": {"sport": "run", "zones": (3, 6), "rpe": 8, "title": "Hills",
                   "steps": [(6, 60, 90), (8, 60, 90), (10, 60, 90), (8, 90, 120), (10, 90, 120), (8, 120, 150)]},
 }
