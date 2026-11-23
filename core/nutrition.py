@@ -42,7 +42,7 @@ def fuel(sport: str, minutes: int | None, hard: bool, weight_kg: float | None = 
     cph = carbs_per_hour(sport, minutes, hard)
     if cph:
         total = _r5(cph * minutes / 60)
-        during = f"{cph} g carbs/h (~{total} g)" + (" + 500-750 ml/h with electrolytes" if big else "")
+        during = f"{cph} g carbs/h (~{total} g)" + (" + 750-1000 ml/h with electrolytes" if big else "")
     else:
         during = "water only" if sport != "gym" else ""
     protein = _r5((0.4 if sport == "gym" else 0.3) * w)

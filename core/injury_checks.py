@@ -12,8 +12,9 @@ Used by:
 Areas covered: training load (ACWR, TSB, ramp rate, monotony, weeks without
 recovery), intensity distribution (time in zone vs a pyramidal split), recovery (HRV, resting HR, sleep vs baseline), cardiovascular drift
 (aerobic decoupling, efficiency factor trend), biomechanics (cadence vs
-baseline, L/R balance), subjective (feel/RPE vs objective data) and running
-volume progression.
+baseline, L/R balance), subjective (feel/RPE vs objective data), running
+volume progression and impact load - running, hills and leg day as a stream of its own
+(core/mechanical.py).
 """
 import logging
 import statistics
@@ -21,6 +22,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 from core.db import get_connection
+from core.mechanical import finding as impact_finding, streams
 from core.periodization import comeback
 
 logger = logging.getLogger("AI_COACH_V1.injury_checks")
@@ -70,7 +72,8 @@ def _load_data(conn, today: date) -> dict:
             SELECT external_id, start_time, type, name, moving_time_sec, distance_m, training_load,
                    intensity_factor, variability_index, decoupling_pct, efficiency_factor,
                    avg_cadence, avg_lr_balance, avg_power_w, feel, rpe,
-                   raw_metrics->'icu_zone_times' AS zone_times, raw_payload->'icu_hr_zone_times' AS hr_zone_times
+                   raw_metrics->'icu_zone_times' AS zone_times, raw_payload->'icu_hr_zone_times' AS hr_zone_times,
+                   (raw_payload->>'total_elevation_gain')::float AS gain
             FROM activities
             WHERE superseded_by IS NULL AND start_time >= %s
             ORDER BY start_time;
@@ -502,6 +505,19 @@ def check_running(data, today, findings, checked, gaps):
             "running-specific tissue tolerance. Build run volume gradually."))
 
 
+def check_impact(data, today, findings, checked, gaps):
+    """The second load stream (core/mechanical.py): running, hills and leg day as impact load,
+    next to the cardio ratio. Area Running, so a caution limits running only."""
+    rows = [w for w in data["wellness"] if w["ctl"] is not None and w["atl"] is not None]
+    last = rows[-1] if rows else {}
+    s = streams(data["activities"], today, last.get("ctl") and float(last["ctl"]),
+                last.get("atl") and float(last["atl"]))
+    checked.append("impact load (running, hills, leg day) vs cardio load")
+    f = impact_finding(s)
+    if f:
+        findings.append(_finding(f[0], "Running", f[1], f[2]))
+
+
 def check_run_spikes(runs, today, findings):
     """Flags single runs much longer than the longest run of the 30 days before them - the spike
     pattern linked to overuse injury in Frandsen et al., BJSM 2025 (weekly change was not)."""
@@ -543,7 +559,7 @@ def run_injury_checks(today: date | None = None) -> dict:
 
     findings, checked, gaps = [], [], []
     for check in (check_load, check_intensity, check_recovery, check_drift, check_biomechanics, check_subjective,
-                  check_running):
+                  check_running, check_impact):
         try:
             check(data, today, findings, checked, gaps)
         except Exception as e:

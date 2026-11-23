@@ -17,7 +17,7 @@ def test_hard_session_fuelled_before_and_after():
 def test_long_ride_high_carb_with_fluids():
     f = fuel("ride", 180, False, 70)
     assert f["carbs_per_hour"] == 90
-    assert "90 g carbs/h (~270 g) + 500-750 ml/h with electrolytes" in f["text"]
+    assert "90 g carbs/h (~270 g) + 750-1000 ml/h with electrolytes" in f["text"]
 
 
 def test_running_tolerates_less():

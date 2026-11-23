@@ -243,6 +243,17 @@ Each check is judged against **the athlete's own baselines**, not textbook const
 - **Running:** volume progression and single-run spikes. A run is compared with the
   longest run of the 30 days before it, but never with less than 8 km
   (`RUN_SPIKE_FLOOR_KM`), so short recent runs don't make a normal run a "spike".
+- **Impact load** (`core/mechanical.py`): a second load stream next to the cardio one (TSS).
+  Running, hills and leg day load bones and tendons; riding hardly does, so ride TSS can hide a
+  running spike. Impact is counted in km-equivalents:
+  - a run counts its km × (1 + share of time in HR Z4+), plus 1 per 100 m climbed;
+  - a leg gym session counts RPE × min / 30;
+  - a walk counts a quarter.
+
+  The impact ACWR is the 7-day EWMA divided by the 28-day EWMA (only from a 10 km-eq/week base).
+  At 1.5 or above it is a `caution` in area Running. That limits running only
+  (`readiness.running_limit`: no hard run), never the bike or the readiness level. The finding
+  shows the cardio ratio beside it, so "legs spiking, engine calm" is visible.
 - **During a comeback** (`core/periodization.comeback`, CTL under 50) the ACWR thresholds
   widen from 1.3/1.5 to 1.7/2.0: at a low CTL the plan's own ramp puts ATL at ~1.5× CTL.
   The ramp-rate check and the recovery signals still watch the absolute progression.
@@ -433,7 +444,7 @@ text, and goes onto the Intervals.icu calendar **only when the athlete taps Push
   - Before: ~1.5 g/kg carbs 2-3 h before a hard or 90+ min session, otherwise a normal meal.
   - During: water under 60 min, 30 g/h at 60-90 min (none for easy sessions under 75 min),
     60 g/h at 90-150 min (75 g/h when hard), and 90 g/h over 150 min (75 g/h running).
-    Electrolyte fluids are added from 90 min.
+    Electrolyte fluids (750-1000 ml/h: the athlete sweats heavily) are added from 90 min.
   - After: ~0.3 g/kg protein (0.4 after gym), plus ~1 g/kg carbs within the hour after hard or
     long sessions.
 
@@ -656,7 +667,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (111 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (115 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |
@@ -691,6 +702,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `pacing.py` | Power fade/pacing per quarter from Intervals.icu watts streams (cached) | "Did my power hold to the end?" |
 | `overview.py` | The shared overview (form, HRV status, week load vs plan, next race), a small TTL cache, the read-only query helper | Keeps the dashboard and briefing numbers identical |
 | `readiness.py` | The green/amber/red verdict from TSB, the HRV trend, sleep, the injury findings and the athlete's feedback (single signals trim, clusters stop); the running limit | The single "can I train hard?" answer |
+| `mechanical.py` | Impact load: running, hills and leg day in km-equivalents, its acute:chronic EWMA ratio next to the cardio ratio | The second load stream; limits running, not riding |
 | `injury_checks.py` | Deterministic risk checks (load, intensity distribution, recovery, drift, biomechanics, subjective, running) against personal baselines, plus text/Markdown renderers | Injury agent, coach tool, dashboard card, readiness input |
 | `feedback.py` | Session RPE/legs and the morning check-in: what to ask, saving taps, readiness signals, coach context | The athlete's own voice in readiness and the plan |
 | `availability.py` | `state/availability.json`: days off / limited days / planned sessions as exact dates, self-expiring into history; day status, unavailable days, last illness, coach context | Plans around sickness, travel and busy days, and resumes by itself |
