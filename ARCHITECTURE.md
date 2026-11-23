@@ -237,9 +237,9 @@ instead of cancelling it (what coaches do on "meh" days):
   - **red:** "watch" together with the "a bit off" check-in, or a **warning**: all 3 systems, or
     watch 2 nights running with heart or breathing still off.
 
-  Missing data (the watch off the wrist) only drops that signal. On the 2025-26 nights the
-  backtest gave 10 watch days and 1 warning in 13 months: heavy blocks, a late night, and the
-  first day of the June illness.
+  Missing data (the watch off the wrist) only drops that signal. A 13-month backtest gave about
+  10 watch days a year, mostly after heavy blocks or short nights, and flagged a real illness
+  on its first day.
 - **Running findings never set the level.** `running_limit()` turns them into
   `running.limit`: `no_hard_run` (caution: easy runs, no extra running) or `easy_short`
   (high: easy runs of at most 30 min, or a ride instead).

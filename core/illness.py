@@ -18,10 +18,9 @@ Three independent systems: heart, autonomic (hrv/stress), breathing. Levels:
   with the athlete's "a bit off" check-in it becomes red (core/readiness.py)
 - warning: all 3 last night, or "watch" 2 nights running with heart or breathing still off last
   night -> red (rest or very easy). HRV alone stays amber: it also drops after hard training.
-Backtest on the athlete's 2025-26 nights: 10 watch days and 1 warning in 13 months, around heavy
-blocks, a late night and the June illness (its first day); the October and November
-illnesses barely showed in the numbers (November: no heart-rate data at all) - hence the
-check-in answer. One bad night alone (a late night, alcohol, a hard session) stays a note. Missing data (the
+Backtested on 13 months of the athlete's nights: about 10 watch days a year, mostly after heavy
+blocks or short nights, and it flagged a real illness on its first day; some illnesses barely
+show in the numbers (or the data is missing), hence the check-in answer. One bad night alone (a late night, alcohol, a hard session) stays a note. Missing data (the
 watch off the wrist) just removes that signal; the athlete's "ill" check-in is handled in
 core/feedback.py.
 """
