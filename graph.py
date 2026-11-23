@@ -10,6 +10,8 @@ from core.db import load_env
 from core.llm import local_llm
 from core.metrics import load_athlete_metrics
 from core.next_session import latest_decision
+from core.progress import context as progress_context
+from core.progression import context as progression_context
 from core.push import status as push_status
 from core.readiness import readiness_context
 from core.schedule import build as build_schedule, summary as schedule_summary
@@ -58,7 +60,9 @@ def global_preprocessor(state: AgentState):
     metrics["current_local_time"] = datetime.now(ZoneInfo("Europe/Bratislava")).strftime("%A %Y-%m-%d %H:%M")
     for key, fn in (("readiness", lambda: readiness_context(metrics.get("tsb"))),
                     ("next_session_decided", latest_decision),
-                    ("push", lambda: push_status(metrics.get("return_to_training")))):
+                    ("push", lambda: push_status(metrics.get("return_to_training"))),
+                    ("progress", progress_context),
+                    ("progression", progression_context)):
         try:
             metrics[key] = fn()
         except Exception as e:

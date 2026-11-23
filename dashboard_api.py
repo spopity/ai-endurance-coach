@@ -113,6 +113,13 @@ def plan(weeks: int = 8):
     return upcoming_plan(max(1, min(weeks, 26)))
 
 
+@router.get("/progress")
+def progress_report():
+    """The nightly progress check (core/progress.py) and the progression levels (core/progression.py)."""
+    from core import progress, progression
+    return {"report": progress.report(), "progression": progression.context()}
+
+
 @router.get("/week-ahead")
 def week_ahead():
     """The rolling 7-day plan (core/schedule.py), re-derived from what was done."""

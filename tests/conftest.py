@@ -23,6 +23,13 @@ def entry(kind: str, days: list[date], max_minutes: int | None = None, session: 
     return e
 
 
+@pytest.fixture(autouse=True)
+def _no_ftp_lookup(monkeypatch):
+    """Workouts scale % targets to the training FTP from the database - not in tests."""
+    from core import workouts
+    monkeypatch.setattr(workouts, "_ftp_scale", lambda: 1.0)
+
+
 @pytest.fixture
 def week(monkeypatch):
     """Configures the schedule's inputs; returns a function (today, done, entries, mix, phase,
@@ -30,14 +37,16 @@ def week(monkeypatch):
     def run(today: date = MONDAY, done: list[dict] | None = None, entries: list[dict] | None = None,
             mix: dict | None = None, phase: str = "Build", deload: bool = False, kind: str = "build_2",
             readiness: dict | None = None, last_ftp_test: date | None = date(2026, 11, 10),
-            last_run_test: date | None = date(2026, 11, 10), longest_run_min: float | None = None):
+            last_run_test: date | None = date(2026, 11, 10), longest_run_min: float | None = None,
+            last_durability_test: date | None = date(2026, 11, 10)):
         block = {"phase": phase, "is_deload": deload, "primary_focus": "test", "sessions": dict(mix or BUILD_MIX)}
         monkeypatch.setattr(schedule.availability, "load", lambda *a, **k: {"entries": entries or [], "history": []})
         monkeypatch.setattr(schedule, "_week_kind", lambda monday: (kind, dict(block, sessions=dict(block["sessions"]))))
         monkeypatch.setattr(schedule, "_done", lambda start, end: [d for d in (done or []) if start <= d["day"] <= end])
         monkeypatch.setattr(schedule, "_targets", lambda: {
             "ftp": 280.0, "hr": [141, 149, 157, 166], "last_ftp_test": last_ftp_test,
-            "last_run_test": last_run_test, "longest_run_min": longest_run_min})
+            "last_run_test": last_run_test, "longest_run_min": longest_run_min,
+            "last_durability_test": last_durability_test, "weight": 70.0})
         monkeypatch.setattr(schedule, "get_focus", lambda: {"mode": "dual"})
         return schedule.build(today=today, readiness=readiness or {"level": "green"})
     return run

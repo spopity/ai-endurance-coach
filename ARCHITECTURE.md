@@ -291,7 +291,9 @@ disagree. Rules:
   rewrites the table:
   - Each closed week gets a verdict against its target: completed (≥85% of the target
     minimum and ≥3 training days), partial, missed (<50% or ≤1 day), or recovery.
-  - Base comes first; Build unlocks after 6 completed Base weeks **within the last 10**.
+  - Base comes first; Build unlocks after 6 completed Base weeks **within the last 10** - or,
+    from 3 completed on, once the aerobic base is measured (heart-rate drift under 5% on the last
+    2 steady long rides within 3 weeks, `core/durability.aerobic_ready`; Friel's test).
     Partial and missed weeks don't count but cost nothing (a week off costs little
     fitness). The only step back is CTL falling 25%+ below the phase peak: about one
     base week to redo per 10% of CTL lost (from Build: back to Base with that many to redo).
@@ -368,7 +370,9 @@ every sync.
 - **Day 1 follows readiness:** red means nothing hard and at most 45 min; amber notes
   "trim ~20% + warm-up test" on the hard session. Running limits turn quality runs easy.
 - **Targets:** watts from the training FTP, heart rates from the last run's HR zones, and
-  sets/reps by week kind (e.g. sweet spot 3x12 → 3x15, VO2max 5x3 → 5x4).
+  sets/reps from the progression levels (§4.12): the week's phase picks the session type (tempo in late
+  Base, sweet spot in Build 1-2, threshold in Build 3 and race prep, VO2max for the VO2 slot), the level
+  picks the dose.
 - **Tests** replace that week's quality session:
   - an FTP test (20 min) when the last ride named like one is 6+ weeks old;
   - a run test (30 min all-out, whose last-20-min HR is the threshold HR) every 8 weeks.
@@ -376,6 +380,12 @@ every sync.
   Never in a deload week, on an amber/red week, within 14 days of an illness or (the run
   test) under a running limit; one test a week. Both are recognised afterwards by the
   activity name (`FTP_TEST_NAME`, `RUN_TEST_NAME`).
+- **Long-ride progression:** 15 min over the longest ride of the last 30 days (30 min while the
+  progress check asks for volume, §4.12), between 2 and 4 h; 75-90 min in a deload week. In Build
+  and race prep it ends with 2x10 min sweet spot in the last 40 min (durability), and every 6
+  weeks (green week, no other test, not within 14 days of an illness) it is a **durability test**:
+  Zone 2 until 15 kJ/kg, then 20 min all-out (name it 'Durability test'). An amber/red first day
+  drops the efforts.
 - **Long-run progression:** the long run is ~10% over the longest run of the last 30 days
   (75% of it in a deload week), between 45 and 120 min. Single-run spikes are the injury
   risk (§4.4).
@@ -532,11 +542,13 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 
 - **Training FTP** (`metrics.training_ftp()`): targets use the set FTP while it is
   fresh. "Updated" is the later of the first ride with the current FTP (Intervals.icu
-  stamps `ftp_at_time` on each activity) and the last ride named like an FTP test. It
-  follows a test every 6-8 weeks: over 6 weeks old → `ftp_check` says a test is due;
-  over 8 weeks without one → targets use eFTP (`ftp_source = "eftp"`, the dashboard says
-  "FTP (from eFTP)") until the next test. The same profile feeds the coach, simulators
-  and race planner.
+  stamps `ftp_at_time` on each activity) and the last ride named like an FTP test. The
+  athlete's rule: a tested FTP is used for 8 weeks; over 6 weeks old → `ftp_check` says a
+  test is due; over 8 weeks without one → targets use eFTP (`ftp_source = "eftp"`, the dashboard
+  says "FTP (from eFTP)") until the next test. The same profile feeds the coach, simulators
+  and race planner; the Intervals.icu workouts scale their % targets to it (Intervals reads %
+  of its own set FTP); and `metrics.ftp_history()` applies the same rule to every past ride, so
+  progression and the progress check judge each ride against the FTP of that day.
 - **Feedback** (tables `session_feedback`, `daily_checkin`, migration 016 - kept apart
   from `activities.rpe/feel`, which Intervals.icu overwrites): Telegram buttons only,
   so no number comes from a model. RPE and legs are asked after **hard, long and gym
@@ -579,6 +591,47 @@ service flow chart, busy hours, per-component token table, and the latest calls.
   split - over 25% moderate, under 70% easy or over 12% hard is a caution finding; also
   `intensity_distribution` in the coach's context.
 
+### 4.12 Progress check and progression levels (`core/progress.py`, `core/progression.py`)
+
+The plan ramps the load and readiness checks it is absorbed; these two close the loop on the
+*output*: is the athlete getting faster, and is each session the right size? Numbers only, no LLM.
+
+- **Progression levels** (`core/progression.py`, stateless like the plan): every quality type
+  (tempo, sweet spot, threshold, VO2max, run tempo, run threshold, hills) has a ladder of doses
+  (e.g. sweet spot 3x10 → 3x12 → 2x20 → 3x15 → 2x25 → 3x20 → 2x30). Every read replays the last
+  180 days of sessions:
+  - rides are measured from Intervals.icu's interval detection (`interval_summary`, "3x 9m54s
+    254w" → 3 reps at 90% of that day's FTP: sweet spot); runs from HR-zone time (lag-corrected,
+    and only when the hard time is a real share of the run, so an easy run drifting into Z3 isn't
+    a tempo run); a workout pushed from the plan counts as its named dose × compliance;
+  - ≥ 95% of the level's work at RPE ≤ expected + 1 (or unrated) → one level up (two for 130%+);
+    RPE expected + 2 → repeat; partial → repeat; two partials under 75% of *pushed* workouts →
+    one level down (an unplanned ride with a few efforts can't); 28 days without the type → one
+    level down per 28 days; an RPE 3+ under the expected one isn't a quality dose.
+  - `schedule.bike_type` / `run_type` pick the type, `progression.dose` the size; the workout
+    builder reads the reps from the plan text, so the Intervals.icu workout matches.
+- **Progress check** (`core/progress.py`, nightly from `scripts/update_plan.py`, written to
+  `state/progress.json`): four 28-day windows of markers - best 5/20-min power (Intervals.icu
+  power curves, one API call), eFTP at the window's end, aerobic efficiency (median power:HR in
+  Zone 2), durability (`core/durability.py`: median heart-rate drift on steady long rides - 90+
+  min, VI ≤ 1.10, endurance IF - lower is better; and the best 20-min power after 15 kJ/kg from
+  the power stream, cached in `state/durability.json`, as a share of that day's training FTP,
+  counted only when it was a real effort ≥ 80%), easy-run economy (metres per heartbeat,
+  grade-adjusted). Every ride is judged against the training FTP of its day (§4.11). Each is up / flat / down
+  against the window before (smallest worthwhile change 1.5-2%), or up on a slow 8-week climb;
+  best-effort power can only be "down" when the window had a session that would show it.
+  - Verdict per sport by majority (improving / flat / declining / mixed); diagnosis in order:
+    progressing, after_illness (sick in the last 4 weeks), fatigued (red readiness),
+    inconsistent (< 2 of the last 3 loading weeks completed - the load is the lever), stalled.
+  - **Stalled → a new stimulus for 21 days** (`athlete_settings` key `progress`): bike in Build
+    more threshold (sweet spot becomes threshold), then a VO2max block (one quality ride a week
+    becomes VO2max), then volume; in Base only volume (the long ride grows 30 min instead of 15);
+    run: rotate the quality run (threshold / hills / tempo). One tried in the last 12 weeks goes
+    last. When it ends it is judged (helped / no change) and Telegram says so. The plan's phase,
+    targets and session mix never change.
+  - Shown in Telegram `/progress`, `GET /api/progress`, and the coach's context (`progress`,
+    `progression`, rule 20).
+
 ---
 
 ## 5. Every file in the project
@@ -590,7 +643,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (73 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (103 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |
@@ -631,6 +684,9 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 | `next_session.py` | Decides, stores and reads the one shared next-session decision; `refresh()` re-decides a stale one (24 h without an activity, every morning) | Keeps Strava, the dashboard, the briefing and chat consistent, and never lets a skipped session sit there |
 | `periodization.py` | Adaptive phase engine: replays closed weeks (completed/partial/missed), rolling Base→Build gate, CTL-drop step-back, form/HRV-timed deloads, CTL-based targets, projection; `hrv_trend()` and the graded `return_status()` | Decides what phase each week is and why, and how to come back after days off |
 | `plan.py` | Session classification (endurance/SST/VO2/run/weights; runs as quality/long/easy), planned vs done per week, plan summary for prompts (with the 7-day plan) | The plan card and the coach's view of "what's left this week" |
+| `progression.py` | Progression levels: dose ladders per quality type, the replay of sessions done (interval detection, HR zones, compliance, RPE), the next dose | Sizes every quality session from what was actually done |
+| `durability.py` | Durability: steady-ride heart-rate drift, the aerobic-base test for Build, best power after 15 kJ/kg from the power stream (cached) | Fatigue resistance as a marker, and when Build can start |
+| `progress.py` | The progress check: 4-week performance markers, trends, verdict and diagnosis per sport, the stimulus change when progress stalls, its judgement; `state/progress.json` | Makes sure the training produces progress, not just load |
 | `push.py` | Push experiments: time-boxed load above the plan, the ceiling from a CTL ramp and the benchmark years, a daily check against readiness and the injury checks, a result per push | Lets the athlete try more without changing the plan |
 | `focus.py` | Cycling vs dual-sport focus: goals, running rule, session-mix and focus-text adjustments, saved in `athlete_settings` | Switches the whole coaching doctrine for winter |
 | `gym_log.py` | Parses `/gym` lift logs into `gym_sets` and prescribes the next weights (double progression from the last session's RPE) | Makes the gym progressive instead of "some gym" |
@@ -675,7 +731,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
 |---|---|---|
 | `create_database.py` | Creates `athlete_twin_v2` if missing and applies any migration not yet recorded in `schema_migrations` | Database setup and upgrades |
 | `setup_readonly_role.py` | Enables login for `coach_reader` with a random password and writes `READONLY_DATABASE_URL` to `.env` (re-run to rotate) | Run once after migration 014 |
-| `update_plan.py` | Recomputes the adaptive plan (`--dry-run` to preview, `--notify` for Telegram on a phase change) | Keeps `training_blocks` in step with the training done |
+| `update_plan.py` | Recomputes the adaptive plan, then runs the progress check (`--dry-run` to preview, `--notify` for Telegram on a phase change or a stimulus starting/ending) | Keeps `training_blocks` in step with the training done |
 | `post_strava_notes.py` | CLI: post pending notes, `--dry-run`, `--activity` for one activity | Run by the Strava-notes timer |
 | `sync_strava_names.py` | Matches Strava (last 6 months, `--full` for all) to local activities and pushes Strava names to Intervals.icu and the database | Run by the nightly name timer |
 | `backfill_strava_history.py` | One-time: uploads Strava-only activities to Intervals.icu (TCX from streams), links double recordings, re-imports the DB; re-runnable, report in `state/strava_backfill_report.txt` | Run once by hand (2026-10-11) |

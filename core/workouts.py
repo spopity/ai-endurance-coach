@@ -116,6 +116,28 @@ def _interval_session(wu: int, main: list, reps: int, cd: int, wu_target: str, c
     return b
 
 
+# The quality sessions' main set comes from the plan's text (core/schedule.py, sized by the
+# progression levels in core/progression.py): "Sweet spot 3x15 min at ..., 5 min easy between".
+QUALITY_RE = re.compile(r"^(VO2max|Tempo|Sweet spot|Threshold|Hills)\s+(\d+)x(\d+)\s*(min|s)\b")
+RECOVERY_RE = re.compile(r"(\d+) min (?:easy|jog) between")
+BIKE_TARGETS = {"VO2max": "106-120% 95rpm", "Tempo": "76-87%", "Sweet spot": "88-94%", "Threshold": "95-105%"}
+
+
+def _quality(detail: str) -> tuple[str, int, int, int] | None:
+    """(title, reps, seconds on, seconds easy between) from a quality session's plan text."""
+    m = QUALITY_RE.match(detail or "")
+    if not m:
+        return None
+    on = int(m.group(3)) * (60 if m.group(4) == "min" else 1)
+    rec = RECOVERY_RE.search(detail)
+    off = int(rec.group(1)) * 60 if rec else on
+    return m.group(1), int(m.group(2)), on, off
+
+
+def _reps_unit(on: int) -> str:
+    return f"{on // 60} min" if on % 60 == 0 and on >= 120 else f"{on} s"
+
+
 def _steady(minutes: int, target: str, wu_target: str, max_min: int | None, cue: str = "") -> list:
     minutes = min(minutes, max_min) if max_min else minutes
     if minutes < 30:
@@ -136,23 +158,38 @@ def _ride_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | Non
             ("Test", 1, [(1200, "95-110%", "All-out 20 min, even pacing - start at FTP and build")]),
             ("Cooldown", 1, [(600, "50%", "")])])
     if k == "bike_q":
-        args = dict(wu_target="Ramp 50-75% 90rpm", cd_target="50%", amber=amber, max_min=max_min)
-        if detail.startswith("VO2max"):
-            on = 240 if "5x4" in detail else 180
-            return (f"VO2max 5x{on // 60} min",
-                    _interval_session(900, [(on, "106-120% 95rpm", ""), (on, "50%", "Easy")], 5, 600, min_reps=3, **args))
-        if detail.startswith("Tempo"):
-            return ("Tempo 2x15 min",
-                    _interval_session(900, [(900, "76-87%", ""), (300, "55%", "Easy")], 2, 600,
-                                      extra=("Endurance", 1, [(600, "62-72%", "")]), min_reps=1, **args))
-        if detail.startswith("Sweet spot 3x15"):
-            return ("Sweet spot 3x15 min", _interval_session(900, [(900, "88-94%", ""), (300, "55%", "Easy")], 3, 600, **args))
-        if detail.startswith("Threshold"):
-            return ("Threshold 3x10 min", _interval_session(900, [(600, "95-105%", ""), (300, "55%", "Easy")], 3, 600, **args))
-        return ("Sweet spot 3x12 min", _interval_session(900, [(720, "88-94%", ""), (300, "55%", "Easy")], 3, 600, **args))
+        q = _quality(detail)
+        if q:
+            title, reps, on, off = q
+            args = dict(wu_target="Ramp 50-75% 90rpm", cd_target="50%", amber=amber, max_min=max_min)
+            target = BIKE_TARGETS[title]
+            name = f"{title} {reps}x{_reps_unit(on)}"
+            if title == "VO2max":
+                return name, _interval_session(900, [(on, target, ""), (on, "50%", "Easy")], reps, 600, min_reps=3, **args)
+            if title == "Tempo":
+                return name, _interval_session(900, [(on, target, ""), (off, "55%", "Easy")], reps, 600,
+                                               extra=("Endurance", 1, [(600, "62-72%", "")]), min_reps=1, **args)
+            return name, _interval_session(900, [(on, target, ""), (off, "55%", "Easy")], reps, 600, **args)
+    if k == "long_ride" and detail.startswith("Durability test"):
+        m = re.search(r"about (\d+) min", detail)
+        z2 = int(m.group(1)) if m else 90
+        return ("Durability test", [
+            ("Warmup", 1, [(600, "Ramp 50-65% 90rpm", "")]),
+            ("Endurance", 1, [(max(600, z2 * 60 - 600), "60-72% 85-95rpm", "Zone 2 until the kJ in the plan, fuel 80 g/h")]),
+            ("Easy", 1, [(300, "50-55%", "")]),
+            ("Test", 1, [(1200, "95-110%", "All-out 20 min, even pacing")]),
+            ("Cooldown", 1, [(600, "50%", "")])])
     if k == "long_ride":
-        mins = 80 if deload else 135
-        return (f"Long ride {mins} min Z2", _steady(mins, "60-72% 85-95rpm", "50-60%", max_min, "Fuel 60 g carbs/h"))
+        m = re.match(r"(\d+)(?:-(\d+))? min", detail)
+        mins = (int(m.group(1)) + int(m.group(2) or m.group(1))) // 10 * 5 if m else (80 if deload else 135)
+        if "last 40 min: 2x10 min sweet spot" in detail:
+            mins = min(mins, max_min) if max_min else mins
+            return (f"Long ride {mins} min + 2x10 SS", [
+                ("Warmup", 1, [(900, "Ramp 50-65% 90rpm", "")]),
+                ("Endurance", 1, [(max(600, (mins - 50) * 60), "60-72% 85-95rpm", "Fuel 60-80 g carbs/h")]),
+                ("Late efforts", 2, [(600, "88-94%", "Sweet spot on tired legs"), (300, "55%", "Easy")]),
+                ("Cooldown", 1, [(300, "50%", "")])])
+        return (f"Long ride {mins} min Z2", _steady(mins, "60-72% 85-95rpm", "50-60%", max_min, "Fuel 60-80 g carbs/h"))
     # easy ride
     if deload:
         return ("Easy ride 50 min", _steady(50, "50-68%", "50%", max_min))
@@ -184,15 +221,18 @@ def _run_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | None
     if k == "run_q" and not detail.startswith("Easy run"):
         strides = ("Strides", 4, [(20, "Z5 HR", "Stride"), (40, "Z1 HR", "Walk/jog")])
         args = dict(wu_target="Z2 HR", cd_target="Z1 HR", amber=amber, max_min=max_min)
-        if detail.startswith("Tempo"):
-            b = _interval_session(600, [(720, "Z3 HR", "Tempo"), (180, "Z1 HR", "Jog")], 2, 480, min_reps=1, **args)
-            name = "Tempo run 2x12 min"
-        elif detail.startswith("Hills"):
-            b = _interval_session(600, [(60, "Z5 HR", "Hard uphill"), (90, "Z1 HR", "Jog down")], 8, 480, min_reps=5, **args)
-            name = "Hill repeats 8x60 s"
+        q = _quality(detail)
+        title, reps, on, off = q if q else ("Threshold", 3, 480, 120)
+        if title == "Hills":
+            b = _interval_session(600, [(on, "Z5 HR", "Hard uphill"), (max(90, on * 3 // 2), "Z1 HR", "Jog down")],
+                                  reps, 480, min_reps=max(1, reps - 3), **args)
+            name = f"Hill repeats {reps}x{_reps_unit(on)}"
+        elif title == "Tempo":
+            b = _interval_session(600, [(on, "Z3 HR", "Tempo"), (off, "Z1 HR", "Jog")], reps, 480, min_reps=1, **args)
+            name = f"Tempo run {reps}x{_reps_unit(on)}"
         else:
-            b = _interval_session(600, [(480, "Z4 HR", "Threshold"), (120, "Z1 HR", "Jog")], 3, 480, **args)
-            name = "Threshold run 3x8 min"
+            b = _interval_session(600, [(on, "Z4 HR", "Threshold"), (off, "Z1 HR", "Jog")], reps, 480, **args)
+            name = f"Threshold run {reps}x{_reps_unit(on)}"
         return name, b[:1] + [strides] + b[1:]
     m = re.match(r"(?:Easy run )?(\d+)", detail)
     if k == "long_run" and not detail.startswith("Easy run"):
@@ -395,6 +435,8 @@ def build_workout(s: dict, day: dict, week: dict, readiness: str) -> dict:
         text, minutes, structured = _render(blocks), round(_total(blocks) / 60), True
         if amber:
             notes.append(WARMUP_TEST)
+    if sport == "ride" and structured:
+        text = scale_percent(text, _ftp_scale())
     header = "\n".join(notes)
     description = (header + "\n\n" if header else "") + text
     return {
@@ -403,6 +445,44 @@ def build_workout(s: dict, day: dict, week: dict, readiness: str) -> dict:
         "type": EVENT_TYPE[sport], "description": description, "plan_detail": s["detail"], "pinned": s["pinned"],
         "moving_time_sec": minutes * 60 if minutes else None, "structured": structured,
     }
+
+
+# --- FTP: Intervals.icu reads % of its own set FTP; the plan trains on the training FTP ---
+
+PERCENT_RE = re.compile(r"(\d+)(?:-(\d+))?%")
+
+
+def _ftp_scale() -> float:
+    """Training FTP / Intervals.icu's set FTP (core/metrics.training_ftp: eFTP once the tested FTP
+    is over 8 weeks old), so the % targets on the watch match the plan's watts. 1.0 when unknown."""
+    from core.overview import cached
+
+    def compute():
+        from core.db import get_connection
+        from core.metrics import load_athlete_profile
+        conn = get_connection()
+        try:
+            p = load_athlete_profile(conn)
+        finally:
+            conn.close()
+        if p.get("ftp_source") == "eftp" and p.get("ftp") and p.get("ftp_set"):
+            return float(p["ftp"]) / float(p["ftp_set"])
+        return 1.0
+    try:
+        return cached("workout_ftp_scale", 300, compute)
+    except Exception as e:
+        logger.warning(f"FTP scale unavailable, using Intervals' FTP as it is: {e}")
+        return 1.0
+
+
+def scale_percent(text: str, scale: float) -> str:
+    """Every "88-94%" / "50%" in a ride workout times `scale`, rounded to whole percent."""
+    if abs(scale - 1) < 0.005:
+        return text
+    def one(m):
+        lo = round(int(m.group(1)) * scale)
+        return f"{lo}-{round(int(m.group(2)) * scale)}%" if m.group(2) else f"{lo}%"
+    return PERCENT_RE.sub(one, text)
 
 
 # --- state ---

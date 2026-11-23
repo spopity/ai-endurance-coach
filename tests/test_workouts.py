@@ -118,3 +118,23 @@ def test_long_run_follows_the_plan_minutes():
     w = W.build_workout(session("long_run", "75-80 min easy, HR under 149, conversational", "run", hard=False),
                         DAY, WEEK, "green")
     assert w["moving_time_sec"] == 77 * 60
+
+
+def test_ride_percentages_follow_the_training_ftp(monkeypatch):
+    # FTP tested over 8 weeks ago: the plan trains on eFTP 266 while Intervals still has 285.
+    monkeypatch.setattr(W, "_ftp_scale", lambda: 266 / 285)
+    w = W.build_workout(session("bike_q", BIKE_DETAILS[4]), DAY, WEEK, "green")
+    assert "82-88%" in w["description"] and "88-94%" not in w["description"]
+    assert W.scale_percent("Ramp 50-75% 90rpm", 1.0) == "Ramp 50-75% 90rpm"
+
+
+@pytest.mark.parametrize("detail", [
+    "150-165 min in Zone 2 (168-202 W), steady, fuel 60-80 g carbs/h; in the last 40 min: 2x10 min sweet spot "
+    "(246-263 W), 5 min easy between - fatigue resistance (durability)",
+    "Durability test (~150 min): Zone 2 (168-202 W) until 1050 kJ (15 kJ/kg, about 115 min), 5 min easy, then 20 min "
+    "all-out, evenly paced; 10 min easy cool-down. Fuel 80 g carbs/h from the start. Name the activity 'Durability test'",
+])
+def test_long_ride_variants_parse(detail):
+    w = W.build_workout(session("long_ride", detail, hard=False), DAY, WEEK, "green")
+    total, _, problems = W.parse_check(w["description"])
+    assert problems == [] and total == w["moving_time_sec"]

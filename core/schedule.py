@@ -31,7 +31,7 @@ import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from core import availability
+from core import availability, progression
 from core.focus import get_focus
 from core.gym import LEG_WORDS, WEIGHTS_TYPES
 from core.overview import cached, query
@@ -66,6 +66,9 @@ RUN_TEST_NAME = re.compile(r"\brun(ning)? test\b|\b5 ?k(m)?\b.*\b(tt|time trial)
 # injury risk, core/injury_checks.check_run_spikes), between these bounds.
 LONG_RUN_GROWTH = 1.10
 LONG_RUN_BOUNDS = (45, 120)
+DURABILITY_TEST_NAME = re.compile(r"\bdurability test\b", re.IGNORECASE)
+LONG_RIDE_BOUNDS = (120, 240)   # minutes: never under 2 h (the old fixed long ride), at most 4 h
+LONG_RIDE_STEP = 15             # minutes over the longest ride of the last 30 days
 SECOND_BIKE_Q_WEIGHT = 60   # a second bike quality session ranks below one quality session per sport
 QUALITY_PHASES = {"Build", "Race prep"}
 TITLES = {"bike_q": "Bike quality", "long_ride": "Long ride", "ride": "Easy ride", "run_q": "Quality run",
@@ -331,6 +334,19 @@ def _test_due(test: str, on: date, t: dict, info: dict, level: str, run_limit: s
     return last is None or (on + timedelta(days=6 - on.weekday()) - last).days >= every
 
 
+def _durability_test_due(on: date, t: dict, info: dict, level: str, avail: dict) -> bool:
+    """A durability test (the long ride as Zone 2 + 20 min all-out) every DURABILITY_TEST_EVERY_DAYS
+    in Build / race prep: not in a deload week, not on an amber/red week, not soon after an illness."""
+    from core.durability import DURABILITY_TEST_EVERY_DAYS
+    if info.get("deload") or info.get("phase") not in QUALITY_PHASES or level != "green":
+        return False
+    ill = availability.last_illness_end(on, avail)
+    if ill and (on - ill).days < TEST_AFTER_ILLNESS_DAYS:
+        return False
+    last = t.get("last_durability_test")
+    return last is None or (on + timedelta(days=6 - on.weekday()) - last).days >= DURABILITY_TEST_EVERY_DAYS
+
+
 # --- concrete targets ---
 
 def _targets() -> dict:
@@ -339,20 +355,31 @@ def _targets() -> dict:
     from core.metrics import load_athlete_profile
     conn = get_connection()
     try:
-        ftp = load_athlete_profile(conn).get("ftp")
+        profile = load_athlete_profile(conn)
     finally:
         conn.close()
+    ftp = profile.get("ftp")
     rows = query("""SELECT raw_payload->'icu_hr_zones' AS z FROM activities
                     WHERE superseded_by IS NULL AND type IN ('Run', 'TrailRun') AND raw_payload ? 'icu_hr_zones'
                     ORDER BY start_time DESC LIMIT 1;""")
     hr = rows[0]["z"] if rows and rows[0]["z"] else [141, 149, 157, 166]
     names = query("""SELECT type, name, (start_time AT TIME ZONE %s)::date AS day, moving_time_sec FROM activities
-                     WHERE superseded_by IS NULL AND type IN ('Ride', 'VirtualRide', 'Run', 'TrailRun')
+                     WHERE superseded_by IS NULL AND type IN ('Ride', 'VirtualRide', 'GravelRide', 'MountainBikeRide', 'Run', 'TrailRun')
                        AND start_time > now() - interval '400 days' ORDER BY start_time DESC;""", (str(TZ),))
     last_ftp = next((r["day"] for r in names if r["type"] in RIDE_TYPES and FTP_TEST_NAME.search(r["name"] or "")), None)
     last_run = next((r["day"] for r in names if r["type"] in RUN_TYPES and RUN_TEST_NAME.search(r["name"] or "")), None)
+    last_dur = next((r["day"] for r in names if r["type"] in RIDE_TYPES and DURABILITY_TEST_NAME.search(r["name"] or "")),
+                    None)
     recent = [r["moving_time_sec"] / 60 for r in names if r["type"] in RUN_TYPES and r["moving_time_sec"]
               and r["day"] >= _today() - timedelta(days=30)]
+    rides = [r["moving_time_sec"] / 60 for r in names if r["type"] in RIDE_TYPES and r["moving_time_sec"]
+             and r["day"] >= _today() - timedelta(days=30)]
+    try:
+        from core import progress
+        emphasis = progress.emphasis()
+    except Exception as e:
+        logger.warning(f"Progress emphasis unavailable: {e}")
+        emphasis = {}
     try:
         from core import gym_log
         lifts = {"lower": gym_log.prescription(True), "upper": gym_log.prescription(False)}
@@ -361,7 +388,55 @@ def _targets() -> dict:
         lifts = {}
     return {"ftp": float(ftp) if ftp else None, "hr": [int(x) for x in hr[:4]],
             "last_ftp_test": last_ftp, "last_run_test": last_run, "longest_run_min": max(recent) if recent else None,
-            "lifts": lifts}
+            "longest_ride_min": max(rides) if rides else None, "lifts": lifts,
+            "last_durability_test": last_dur, "weight": float(profile["weight_kg"]) if profile.get("weight_kg") else None,
+            "levels": progression.levels(), "emphasis": emphasis}
+
+
+def long_ride_minutes(longest: float | None, deload: bool, volume: bool = False) -> str:
+    """The long ride: LONG_RIDE_STEP over the longest ride of the last 30 days (twice that while
+    the progress check asks for more volume), within LONG_RIDE_BOUNDS; 75-90 min in a deload week."""
+    if deload:
+        return "75-90 min"
+    lo, hi = LONG_RIDE_BOUNDS
+    target = (longest or 0) + LONG_RIDE_STEP * (2 if volume else 1)
+    m = int(min(max(target, lo), hi) // 15 * 15)
+    return f"{m}-{m + 15} min"
+
+
+def _levels(t: dict) -> dict:
+    return t.get("levels") or progression.START_LEVEL
+
+
+def _session_minutes(d: dict, wu: int, cd: int) -> int:
+    """Warm-up + the reps with the easy time between + cool-down, in minutes, rounded to 5."""
+    work = d["reps"] * d["on"] + (d["reps"] - 1) * d["off"]
+    return int(round((wu * 60 + work + cd * 60) / 300) * 5)
+
+
+def bike_type(info: dict, t: dict) -> str:
+    """Which ladder (core/progression.py) the week's bike quality session uses: the plan's choice
+    for the week, changed by the progress check's stimulus (core/progress.py) in Build weeks."""
+    if info.get("_vo2_next"):
+        return "vo2"
+    typ = {"base_late": "tempo", "build_3": "threshold", "specific": "threshold"}.get(info.get("kind") or "",
+                                                                                      "sweet_spot")
+    emphasis = (t.get("emphasis") or {}).get("bike")
+    if info.get("phase") in QUALITY_PHASES and not info.get("deload"):
+        if emphasis == "vo2" and not info.get("_emphasis_used"):
+            info["_emphasis_used"] = True   # one session of the week becomes VO2max
+            return "vo2"
+        if emphasis == "threshold" and typ == "sweet_spot":
+            return "threshold"
+    return typ
+
+
+def run_type(info: dict, t: dict) -> str:
+    """Which ladder the week's quality run uses (the plan's choice, or the progress check's stimulus)."""
+    emphasis = (t.get("emphasis") or {}).get("run")
+    if emphasis in ("run_tempo", "run_threshold", "run_hills"):
+        return emphasis
+    return {"build_1": "run_tempo", "build_3": "run_hills"}.get(info.get("kind") or "", "run_threshold")
 
 
 def long_run_minutes(longest: float | None, deload: bool) -> str:
@@ -383,31 +458,54 @@ def _cap(minutes: str, day: dict) -> str:
 
 
 def describe(kind: str, info: dict, t: dict, day: dict, first_ride: bool = False, first_run: bool = False,
-             run_limit: str = "none") -> str:
-    text = _describe(kind, info, t, day, first_ride, first_run, run_limit)
+             run_limit: str = "none", easy_only: bool = False) -> str:
+    """The session's text with its targets. `easy_only` (an amber/red first day): no hard
+    efforts inside endurance sessions."""
+    text = _describe(kind, info, t, day, first_ride, first_run, run_limit, easy_only)
     if day["max_minutes"] and kind in ("bike_q", "run_q") and "at most" not in text:
         text += (f" - only {day['max_minutes']} min today: keep the main set, shorten the warm-up and "
                  "cool-down, drop a rep if it doesn't fit")
     return text
 
 
-def _describe(kind: str, info: dict, t: dict, day: dict, first_ride: bool, first_run: bool, run_limit: str) -> str:
+def durability_test_text(t: dict, day: dict) -> str:
+    """Zone 2 until 15 kJ/kg of work, then 20 min all-out (core/durability.py measures it)."""
+    from core.durability import LATE_KJ_PER_KG
+    kj = round(LATE_KJ_PER_KG * (t.get("weight") or 72))
+    z2_watts = 0.65 * (t.get("ftp") or 250)
+    z2_min = int(round(kj * 1000 / z2_watts / 60 / 5) * 5)
+    total = z2_min + 5 + 20 + 10
+    return (f"Durability test (~{total} min): Zone 2 ({_w(t, 0.60, 0.72)}) until {kj} kJ (15 kJ/kg, about "
+            f"{z2_min} min), 5 min easy, then 20 min all-out, evenly paced; 10 min easy cool-down. Fuel 80 g "
+            "carbs/h from the start. Name the activity 'Durability test'")
+
+
+def _describe(kind: str, info: dict, t: dict, day: dict, first_ride: bool, first_run: bool, run_limit: str,
+              easy_only: bool = False) -> str:
     wk, deload, phase = info.get("kind") or "", info.get("deload"), info.get("phase")
     z2, easy_hr = _w(t, 0.56, 0.75), t["hr"][1]
     if kind == "bike_q":
-        if info.get("_vo2_next"):
-            reps = "5x4 min" if wk in ("build_3", "specific") else "5x3 min"
-            return f"VO2max {reps} at {_w(t, 1.06, 1.20)}, equal easy recoveries; 15 min warm-up, 10 min cool-down (~65 min)"
-        if wk == "base_late":
-            return f"Tempo 2x15 min at {_w(t, 0.76, 0.87)}, 5 min easy between, inside a 75 min Zone 2 ride"
-        if wk == "build_2":
-            return f"Sweet spot 3x15 min at {_w(t, 0.88, 0.94)} (or 2x20), 5 min easy between (~90 min)"
-        if wk in ("build_3", "specific"):
-            return f"Threshold 3x10 min at {_w(t, 0.95, 1.05)}, 5 min easy between (~75 min)"
-        return f"Sweet spot 3x12 min at {_w(t, 0.88, 0.94)}, 5 min easy between (~75 min)"
+        typ = bike_type(info, t)
+        d = progression.dose(typ, _levels(t)[typ])
+        rt, off, mins = progression.reps_text(d), d["off"] // 60, _session_minutes(d, 15, 10)
+        if typ == "vo2":
+            return (f"VO2max {rt} at {_w(t, 1.06, 1.20)}, equal easy recoveries; 15 min warm-up, "
+                    f"10 min cool-down (~{mins} min)")
+        if typ == "tempo":
+            return (f"Tempo {rt} at {_w(t, 0.76, 0.87)}, {off} min easy between, inside a {max(75, mins + 10)} min "
+                    "Zone 2 ride")
+        if typ == "threshold":
+            return f"Threshold {rt} at {_w(t, 0.95, 1.05)}, {off} min easy between (~{mins} min)"
+        return f"Sweet spot {rt} at {_w(t, 0.88, 0.94)}, {off} min easy between (~{mins} min)"
     if kind == "long_ride":
-        mins = "75-90 min" if deload else "2-2.5 h"
-        return f"{_cap(mins, day)} in Zone 2 ({z2}), steady, fuel 60 g carbs/h"
+        mins = long_ride_minutes(t.get("longest_ride_min"), deload, (t.get("emphasis") or {}).get("bike") == "volume")
+        if info.get("_durability_test") and not easy_only:
+            return durability_test_text(t, day)
+        text = f"{_cap(mins, day)} in Zone 2 ({z2}), steady, fuel 60-80 g carbs/h"
+        if info.get("phase") in QUALITY_PHASES and not deload and not easy_only:
+            text += (f"; in the last 40 min: 2x10 min sweet spot ({_w(t, 0.88, 0.94)}), 5 min easy between - "
+                     "fatigue resistance (durability)")
+        return text
     if kind == "ride":
         if deload:
             return f"{_cap('45-60 min', day)} Zone 1-2 ({_w(t, 0.50, 0.70)}), relaxed"
@@ -420,13 +518,17 @@ def _describe(kind: str, info: dict, t: dict, day: dict, first_ride: bool, first
     if kind == "run_q":
         if run_limit != "none":
             return f"Easy run 35-40 min, HR under {easy_hr} (running is limited: no hard run this week)"
-        if wk == "build_1":
-            main = f"Tempo 2x12 min at {t['hr'][1] + 1}-{t['hr'][2]} bpm, 3 min jog between"
-        elif wk == "build_3":
-            main = "Hills 8x60 s hard uphill, jog down"
+        typ = run_type(info, t)
+        d = progression.dose(typ, _levels(t)[typ])
+        rt, off = progression.reps_text(d), d["off"] // 60
+        if typ == "run_tempo":
+            main = f"Tempo {rt} at {t['hr'][1] + 1}-{t['hr'][2]} bpm, {off} min jog between"
+        elif typ == "run_hills":
+            main = f"Hills {rt} hard uphill, jog down"
         else:
-            main = f"Threshold 3x8 min at {t['hr'][2] + 1}-{t['hr'][3]} bpm, 2 min jog between"
-        return f"{main}; 10 min easy warm-up with strides, 8 min cool-down (~45-50 min)"
+            main = f"Threshold {rt} at {t['hr'][2] + 1}-{t['hr'][3]} bpm, {off} min jog between"
+        return (f"{main}; 10 min easy warm-up with strides, 8 min cool-down "
+                f"(~{_session_minutes(d, 12, 8)} min)")
     if kind == "ftp_test":
         return ("FTP test (20 min): 20 min warm-up with 3x1 min fast pedalling, 5 min hard, 10 min easy, then "
                 "20 min all-out, evenly paced (start at about your FTP and build); 10 min cool-down. "
@@ -526,6 +628,10 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
             if quality in todo and _test_due(test, max(monday, today), t, info, week_level, run_limit, avail, days):
                 todo[todo.index(quality)] = test
                 break   # one test a week: the other one waits for the next week
+        else:
+            week_level = level if monday == this_monday else "green"
+            if "long_ride" in todo and _durability_test_due(max(monday, today), t, info, week_level, avail):
+                info["_durability_test"] = True
         dropped += [(monday, k) for k in _layout(seg, todo, hard_before, no_hard)]
         hard_before |= {d["date"] for d in seg if any(s in HARD for s in d["sessions"])}
         info["monday"] = monday
@@ -544,7 +650,8 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
             first_ride = k == "ride" and (monday, "ride") not in seen
             first_run = k == "run" and (monday, "run") not in seen
             seen |= {(monday, k)}
-            detail = day["pin"] if pinned else describe(k, info, t, day, first_ride, first_run, run_limit)
+            detail = day["pin"] if pinned else describe(k, info, t, day, first_ride, first_run, run_limit,
+                                                        easy_only=day is first and level != "green")
             note = None
             if day is first and k in HARD and SPORT[k] != "gym" and level == "amber":
                 note = "amber readiness: trim it ~20% and start with the warm-up test"

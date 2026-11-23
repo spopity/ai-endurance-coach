@@ -7,7 +7,9 @@ target it had (completed / partial / missed / recovery) and moves a small state
 machine:
 
 - Base comes first. Build unlocks once BASE_WEEKS_REQUIRED base weeks were
-  *completed* within the last BASE_WINDOW weeks. Partial and missed weeks simply
+  *completed* within the last BASE_WINDOW weeks - or, from BASE_EARLY_WEEKS on, as soon as the
+  aerobic base is measured as established (Friel: heart-rate drift under 5% on the last 2 steady
+  long rides, core/durability.aerobic_ready). Partial and missed weeks simply
   don't count - they don't subtract, because a week of life happening costs very
   little fitness (two weeks off lower VO2max measurably but modestly).
 - The only step back is a real loss of fitness: CTL falling CTL_DROP_RESET below
@@ -46,6 +48,8 @@ import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+
+from core.durability import aerobic_ready
 
 logger = logging.getLogger("AI_COACH_V1.periodization")
 
@@ -355,9 +359,12 @@ def judge(kind: str, load: float, days: int, lo: float, hi: float, available_day
     return "partial"
 
 
-def advance(s: State, kind: str, verdict: str, load: float, hi: float, hold: float, ctl_end: float) -> str:
+def advance(s: State, kind: str, verdict: str, load: float, hi: float, hold: float, ctl_end: float,
+            aerobic_ok: bool = False) -> str:
     """Moves the state past a closed week; returns why the next week is what it is.
-    `hold` is the load that keeps fitness (7 x CTL at the week's start)."""
+    `hold` is the load that keeps fitness (7 x CTL at the week's start). `aerobic_ok`: the aerobic
+    base is measured as established (core/durability.aerobic_ready: the last 2 steady long rides
+    drifted under 5%) - Build then unlocks from BASE_EARLY_WEEKS completed base weeks on."""
     s.ctl_peak = max(s.ctl_peak, ctl_end)
     if s.phase == "Base" and verdict not in ("away", "race"):  # weeks away don't use up the window
         s.base_weeks.append(verdict)
@@ -387,6 +394,11 @@ def advance(s: State, kind: str, verdict: str, load: float, hi: float, hold: flo
     if s.phase == "Base" and s.progress >= BASE_WEEKS_REQUIRED:
         s.phase, s.base_weeks, s.credit, s.ctl_peak, s.build_step = "Build", [], 0, ctl_end, 0
         return f"{BASE_WEEKS_REQUIRED} base weeks completed - Build unlocked"
+    if s.phase == "Base" and aerobic_ok and s.progress >= BASE_EARLY_WEEKS and verdict == "completed":
+        done = s.progress
+        s.phase, s.base_weeks, s.credit, s.ctl_peak, s.build_step = "Build", [], 0, ctl_end, 0
+        return (f"aerobic base established after {done}/{BASE_WEEKS_REQUIRED} base weeks (heart-rate drift under "
+                "5% on the last 2 steady long rides) - Build unlocked early")
 
     if s.phase == "Base":
         left = BASE_WEEKS_REQUIRED - s.progress
@@ -432,6 +444,19 @@ def _history(conn, start: date, end: date) -> tuple[dict, dict, dict, dict]:
     return weeks, ctl, tsb, hrv
 
 
+def _steady_rides(conn, start: date, end: date) -> list[tuple[date, float]]:
+    """(day, decoupling %) of the steady long rides between start and end (core/durability.py)."""
+    from core.durability import steady_decoupling
+    from core.plan import RIDE_TYPES
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT start_time::date AS day, moving_time_sec, variability_index, intensity_factor, decoupling_pct
+            FROM activities WHERE superseded_by IS NULL AND type = ANY(%s) AND start_time::date BETWEEN %s AND %s
+            ORDER BY start_time;
+        """, (list(RIDE_TYPES), start, end))
+        return steady_decoupling(cur.fetchall())
+
+
 def training_days(conn, since: date) -> list[date]:
     """Days with training load (walks don't count), oldest first - for return_status()."""
     with conn.cursor() as cur:
@@ -470,6 +495,7 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
     today = today or date.today()
     this_monday = monday(today)
     weeks, ctl, tsb, hrv = _history(conn, REPLAY_FROM, today)
+    steady = _steady_rides(conn, REPLAY_FROM - timedelta(days=21), today)
     bench = benchmark_weeks(conn)
     races = load_races(today) if races is None else races
     availability = avail.load(today) if availability is None else availability
@@ -496,7 +522,8 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
         load, days = weeks.get(wk, (0.0, 0))
         verdict = judge(kind, load, days, lo, hi, free)
         rows.append(_row(wk, s.phase, kind, lo, hi, verdict, _why(why, reason, free), load))
-        reason = advance(s, kind, verdict, load, hi, 7 * ctl_start, ctl_end)
+        reason = advance(s, kind, verdict, load, hi, 7 * ctl_start, ctl_end,
+                         aerobic_ready(steady, wk + timedelta(days=6)))
         last_ctl = ctl_end
         wk += timedelta(weeks=1)
 
@@ -528,7 +555,8 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
         verdict = judge(kind, load, days, lo, hi, free)
         hold = 7 * proj_ctl
         proj_ctl += (load / 7 - proj_ctl) * CTL_GAIN_PER_WEEK
-        reason = advance(s, kind, verdict, load, hi, hold, proj_ctl)
+        # This week may unlock Build on the rides done so far; future weeks can't be measured yet.
+        reason = advance(s, kind, verdict, load, hi, hold, proj_ctl, i == 0 and aerobic_ready(steady, today))
         wk += timedelta(weeks=1)
     return rows
 

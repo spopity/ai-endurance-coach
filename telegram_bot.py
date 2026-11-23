@@ -74,6 +74,8 @@ HELP_TEXT = (
     "/briefing - today's briefing now (it also arrives every morning)\n"
     "/week - the next 7 days of training; it re-plans itself after every sync (a missed session moves, "
     "the filler drops)\n"
+    "/progress - am I getting faster? Performance markers per 4 weeks, the verdict, and the level of each "
+    "quality session type\n"
     "To change your next session, agree it with the coach and say \"update my plan\" - "
     "nothing changes until you tap Apply.\n"
     "Tell me when you can't train (\"sick for 3 days\", \"away until Sunday\", \"only 40 min today\") - "
@@ -590,6 +592,23 @@ async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_markdown_to(context.bot, update.effective_chat.id, text)
 
 
+async def cmd_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """The nightly progress check (core/progress.py) and the current progression levels."""
+    from core import progress, progression
+    try:
+        def text():
+            levels = progression.context().get("levels") or {}
+            names = {"sweet_spot": "Sweet spot", "threshold": "Threshold", "vo2": "VO2max", "tempo": "Tempo",
+                     "run_threshold": "Run threshold", "run_tempo": "Run tempo", "run_hills": "Hills"}
+            lines = [f"{names[t]}: level {v['level']}, next {v['next_dose']}" for t, v in levels.items()]
+            return progress.markdown() + ("\n\n*Progression levels*\n" + "\n".join(lines) if lines else "")
+        reply = await asyncio.to_thread(text)
+    except Exception as e:
+        logger.error("Progress report failed", exc_info=True)
+        reply = f"❌ Couldn't build the progress report: {e}"
+    await send_markdown_to(context.bot, update.effective_chat.id, reply)
+
+
 # --- Structured workouts (core/workouts.py): built every morning, pushed to Intervals.icu on a tap ---
 
 def workout_buttons(day: str, w: dict) -> InlineKeyboardMarkup | None:
@@ -679,6 +698,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application: Application):
     await application.bot.set_my_commands([
         BotCommand("week", "The next 7 days of training"),
+        BotCommand("progress", "Am I getting faster? Markers, verdict, levels"),
         BotCommand("briefing", "Today's briefing now"),
         BotCommand("workout", "Today's workouts - push to Intervals.icu"),
         BotCommand("gym", "Log lifts: squat 80x5x3, rdl 60x8x3"),
@@ -725,6 +745,7 @@ def main():
     application.add_handler(CommandHandler("sync", cmd_sync, filters=allowed))
     application.add_handler(CommandHandler("briefing", cmd_briefing, filters=allowed))
     application.add_handler(CommandHandler("week", cmd_week, filters=allowed))
+    application.add_handler(CommandHandler("progress", cmd_progress, filters=allowed))
     application.add_handler(CommandHandler("workout", cmd_workout, filters=allowed))
     application.add_handler(CommandHandler("gym", cmd_gym, filters=allowed))
     application.add_handler(CallbackQueryHandler(on_workout_button, pattern=r"^wo:"))

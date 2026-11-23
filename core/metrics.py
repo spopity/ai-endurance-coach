@@ -54,10 +54,12 @@ def load_athlete_profile(conn) -> dict:
         return profile
 
 
-# The FTP that targets are built on, following the test rhythm of every 6-8 weeks: the set
-# FTP (Intervals.icu) is trusted while it is fresh; from FTP_TEST_DUE_DAYS a test is
-# suggested, and once it hasn't been updated or retested for EFTP_FALLBACK_DAYS,
-# Intervals.icu's eFTP (from recent maximal efforts) is used instead until the next test.
+# The FTP that targets are built on (the athlete's rule): a tested FTP is used for 8 weeks (a
+# test is suggested from 6); once
+# it hasn't been updated or retested for EFTP_FALLBACK_DAYS, Intervals.icu's eFTP (from recent
+# maximal efforts) is used instead until the next test. The same rule judges past rides
+# (ftp_on), so progression and the progress check measure every ride against the FTP the
+# athlete was training with that day.
 FTP_TEST_DUE_DAYS = 42          # 6 weeks: time for a test
 EFTP_FALLBACK_DAYS = 56         # 8 weeks without one: train on eFTP
 FTP_TEST_NAME = re.compile(r"\b(ftp|ramp)\b.*\btest\b|\btest\b.*\bftp\b|\b20 ?min(ute)?s? test\b", re.I)
@@ -87,9 +89,33 @@ def training_ftp(cur, ftp, eftp) -> dict:
     age = (date.today() - updated).days if updated else None
     out.update(ftp_updated=updated.isoformat() if updated else None, ftp_age_days=age,
                ftp_test_due=age is None or age > FTP_TEST_DUE_DAYS)
+    value, source = ftp_on(ftp, updated, date.today(), eftp)
+    return {**out, "ftp": value, "ftp_source": source}
+
+
+def ftp_on(set_ftp, updated: date | None, on: date, eftp) -> tuple:
+    """(FTP to train with on day `on`, 'set' | 'eftp'): the set FTP while it was updated or
+    tested within EFTP_FALLBACK_DAYS, else eFTP (when there is one)."""
+    age = (on - updated).days if updated else None
     if (age is None or age > EFTP_FALLBACK_DAYS) and eftp:
-        return {**out, "ftp": round(float(eftp)), "ftp_source": "eftp"}
-    return {**out, "ftp": ftp}
+        return round(float(eftp)), "eftp"
+    return set_ftp, "set"
+
+
+def ftp_history(rides: list[dict]) -> list:
+    """The training FTP of each ride, by ftp_on() as it stood that day. `rides` oldest first,
+    each with day, ftp_at_time (Intervals.icu's set FTP that day), eftp (its rolling eFTP) and
+    name. The set FTP counts as updated on the first ride with a new value or an FTP test."""
+    out, since, last_value, last_test = [], None, None, None
+    for r in rides:
+        value = r.get("ftp_at_time")
+        if value is not None and (last_value is None or round(float(value)) != round(float(last_value))):
+            since, last_value = r["day"], value
+        if FTP_TEST_NAME.search(r.get("name") or ""):
+            last_test = r["day"]
+        updated = max([d for d in (since, last_test) if d], default=None)
+        out.append(ftp_on(value, updated, r["day"], r.get("eftp"))[0] if value or r.get("eftp") else None)
+    return out
 
 
 # Set FTP vs Intervals.icu eFTP: eFTP sinking is often just a lack of recent hard
@@ -129,8 +155,8 @@ def ftp_drift(ftp, eftp, profile: dict | None = None) -> dict | None:
         status = "ok"
         message = f"eFTP {eftp:.0f} W agrees with your set FTP {ftp:.0f} W."
     if p.get("ftp_test_due"):
-        message += (f" FTP {when} - a test is due (every 6-8 weeks); after {EFTP_FALLBACK_DAYS // 7} weeks without "
-                    "one, targets switch to eFTP.")
+        message += (f" FTP {when} - a test is due (every {FTP_TEST_DUE_DAYS // 7} weeks); after "
+                    f"{EFTP_FALLBACK_DAYS // 7} weeks without one, targets use eFTP.")
         status = "due" if status == "ok" else status
     return {"pct": pct, "status": status, "message": message}
 

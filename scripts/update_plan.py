@@ -1,11 +1,13 @@
 """
 Recomputes the adaptive training plan (core/periodization.py) from the training
-actually done and rewrites training_blocks. Runs nightly after the Intervals.icu
-sync; safe to run any time.
+actually done and rewrites training_blocks, then runs the progress check
+(core/progress.py: markers, verdicts, a new stimulus where progress stalled).
+Runs nightly after the Intervals.icu sync; safe to run any time.
 
 Run: python scripts/update_plan.py [--dry-run] [--notify]
   --dry-run  print the replay and the projection, write nothing
-  --notify   send a Telegram message when this week's phase changed
+  --notify   send a Telegram message when this week's phase changed, or a stimulus
+             started or ended
 """
 import argparse
 import os
@@ -17,6 +19,7 @@ sys.path.insert(0, ROOT)
 from core.db import get_connection, load_env  # noqa: E402
 from core.notify import notify_telegram  # noqa: E402
 from core.periodization import compute_plan, update_plan  # noqa: E402
+from core import progress  # noqa: E402
 
 
 def label(r: dict | None) -> str:
@@ -53,6 +56,22 @@ def main():
             f"📅 Training plan adapted: this week is now {label(now)} (was {label(before)}).\n"
             f"Why: {now['notes']}.\n"
             f"Target {now['target_weekly_load_min']:.0f}-{now['target_weekly_load_max']:.0f} TSS. {now['primary_focus']}"))
+
+    try:
+        result = progress.update()
+    except Exception as e:
+        print(f"\nProgress check failed: {e}")
+        return
+    print("\n" + progress.markdown(result["report"]))
+    messages = []
+    for e in result["ended"]:
+        messages.append(f"🔁 Stimulus ended ({e['sport']}): {progress.STIMULUS_TEXT[e['stimulus']]} - result: "
+                        f"{e['result'].replace('_', ' ')}.")
+    for e in result["started"]:
+        messages.append(f"📈 Progress stalled ({e['sport']}), changing the stimulus until {e['until']}: "
+                        f"{progress.STIMULUS_TEXT[e['stimulus']]}.\nWhy: {e['why']}")
+    if args.notify and messages:
+        notify_telegram(load_env(), "\n\n".join(messages))
 
 
 if __name__ == "__main__":
