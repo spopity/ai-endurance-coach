@@ -5,9 +5,11 @@ The athlete's own feedback, collected by the Telegram bot in a few taps:
   how the legs feel (session_feedback). The RPE is also written to the activity on Intervals.icu
   (icu_rpe), where it gives the session an RPE x minutes load (session_rpe) - the only load a
   gym session really has, as its heart-rate load is near zero,
-- every morning after the briefing: body (fresh / normal / sore / very sore / ill) and
-  motivation (daily_checkin) - this also covers yesterday's easy sessions, which get no
-  question of their own.
+- every morning after the briefing: body (fresh / normal / sore / very sore / a bit off / ill),
+  the night (good / ok / poor), life stress (low / normal / high) and motivation
+  (daily_checkin) - a short Hooper-style well-being check. It also covers yesterday's easy
+  sessions, which get no question of their own. "A bit off" is the athlete's half of the illness
+  early warning (core/illness.py); a poor night together with high stress trims the day.
 
 It feeds the readiness verdict (signals()), the coach's context (context()) and, for
 "ill", the availability file. Numbers come from taps, never from the model.
@@ -34,7 +36,10 @@ def query(sql: str, params=()) -> list[dict]:
 ASK_WITHIN_HOURS = 36           # sessions older than this aren't asked about any more
 NOT_ASKED_TYPES = ("Walk",)
 LEGS = {"fresh": "Fresh", "normal": "Normal", "heavy": "Heavy", "sore": "Sore"}
-BODY = {"fresh": "Fresh", "normal": "Normal", "sore": "Sore", "very_sore": "Very sore", "ill": "Ill"}
+BODY = {"fresh": "Fresh", "normal": "Normal", "sore": "Sore", "very_sore": "Very sore", "off": "A bit off",
+        "ill": "Ill"}
+SLEEP = {"good": "Good", "ok": "OK", "poor": "Poor"}
+STRESS = {"low": "Low", "normal": "Normal", "high": "High"}
 MOTIVATION = {"high": "High", "normal": "Normal", "low": "Low"}
 HARD_RIDE_KINDS = ("sst", "vo2")  # core.plan.classify kinds that count as a hard ride
 HARD_RUN_Z4_MIN = 10            # a run with this many minutes in HR Z4+ ...
@@ -141,22 +146,25 @@ def mark_checkin_asked(day: date):
     _execute("INSERT INTO daily_checkin (day) VALUES (%s) ON CONFLICT DO NOTHING;", (day,))
 
 
-def save_checkin(day: date, body: str | None = None, motivation: str | None = None):
-    if body is not None and body not in BODY:
-        raise ValueError(f"Unknown body value {body!r}")
-    if motivation is not None and motivation not in MOTIVATION:
-        raise ValueError(f"Unknown motivation value {motivation!r}")
-    _execute("""
-        INSERT INTO daily_checkin (day, body, motivation, answered_at) VALUES (%s, %s, %s, now())
-        ON CONFLICT (day) DO UPDATE SET body = COALESCE(EXCLUDED.body, daily_checkin.body),
-            motivation = COALESCE(EXCLUDED.motivation, daily_checkin.motivation), answered_at = now();
-    """, (day, body, motivation))
+CHECKIN_FIELDS = {"body": BODY, "sleep": SLEEP, "stress": STRESS, "motivation": MOTIVATION}
+
+
+def save_checkin(day: date, **answers):
+    """Saves any of body / sleep / stress / motivation for `day` (the others are kept)."""
+    for k, v in answers.items():
+        if k not in CHECKIN_FIELDS or (v is not None and v not in CHECKIN_FIELDS[k]):
+            raise ValueError(f"Unknown check-in answer {k}={v!r}")
+    cols = [k for k in CHECKIN_FIELDS if answers.get(k) is not None]
+    _execute(f"""
+        INSERT INTO daily_checkin (day, {", ".join(cols)}, answered_at) VALUES (%s, {", ".join(["%s"] * len(cols))}, now())
+        ON CONFLICT (day) DO UPDATE SET {", ".join(f"{c} = EXCLUDED.{c}" for c in cols)}, answered_at = now();
+    """, (day, *[answers[c] for c in cols]))
 
 
 # --- reading it back ---
 
 def today_checkin(today: date | None = None) -> dict | None:
-    rows = query("SELECT body, motivation FROM daily_checkin WHERE day = %s AND answered_at IS NOT NULL;",
+    rows = query("SELECT body, sleep, stress, motivation FROM daily_checkin WHERE day = %s AND answered_at IS NOT NULL;",
                  (today or date.today(),))
     return rows[0] if rows else None
 
@@ -189,6 +197,10 @@ def signals(today: date | None = None) -> tuple[list[str], list[str]]:
             amber.append("very sore this morning")
         elif c["body"] == "sore" and c["motivation"] == "low":
             amber.append("sore and low motivation")
+        elif c["body"] == "off":
+            amber.append("feeling a bit off")
+        if c.get("sleep") == "poor" and c.get("stress") == "high":
+            amber.append("poor night and high life stress")
     last = next(iter(recent_sessions(1)), None)
     if last and last["start_time"] >= datetime.now(timezone.utc) - timedelta(hours=36):
         if last["legs"] == "sore":
@@ -226,7 +238,9 @@ def context(today: date | None = None) -> dict:
     return {
         "gym_last_14_days": gym_load(),
         "lifts_logged_last_14_days": _lifts(),
-        "morning_checkin": ({"body": BODY.get(c["body"]), "motivation": MOTIVATION.get(c["motivation"])} if c else None),
+        "morning_checkin": ({"body": BODY.get(c["body"]), "sleep": SLEEP.get(c.get("sleep")),
+                            "life_stress": STRESS.get(c.get("stress")), "motivation": MOTIVATION.get(c["motivation"])}
+                           if c else None),
         "recent_sessions": [{"activity": f"{r['type']} '{r['name']}' {r['start_time']:%Y-%m-%d}", "kind": r["kind"],
                              "rpe": r["rpe"], "legs": LEGS.get(r["legs"])} for r in recent_sessions()],
     }

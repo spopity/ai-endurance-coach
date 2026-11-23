@@ -27,7 +27,7 @@ from core.focus import get_focus
 from core.next_session import get_or_decide, session_line
 from core.gym import gym_focus
 from core.nutrition import without_fuel
-from core.plan import RIDE_TYPES, RUN_TYPES, classify
+from core.plan import run_kind, RIDE_TYPES, RUN_TYPES, classify
 from core.readiness import current_readiness
 
 logger = logging.getLogger("AI_COACH_V1.strava_notes")
@@ -135,10 +135,17 @@ def build_facts(a: dict) -> tuple[str, str]:
     label = KIND_LABELS.get(kind) or re.sub(r"(?<=[a-z])(?=[A-Z])", " ", a["type"])  # "AlpineSki" -> "Alpine Ski"
     if kind == "endurance" and a["intensity_factor"] is not None and a["intensity_factor"] < RECOVERY_IF:
         label = "Recovery"
-    first = [f"🎯 {label}"]
-    intervals = [s for s in (a["interval_summary"] or []) if s]
-    if intervals:
-        first.append(re.sub(r"(\d)w\b", r"\1 W", " + ".join(intervals[:2])))  # Intervals.icu writes "261w"
+    planned = _pushed_workout(a)
+    if planned and planned.get("completed") and planned.get("name") and a["type"] in RIDE_TYPES:
+        label = plan_label(planned["name"])   # done from a pushed workout: it is what was planned
+    if a["type"] in RUN_TYPES:
+        label, detail = run_target(a["hr_zones"], a["moving_time_sec"], planned)
+        first = [f"🎯 {label}"] + ([detail] if detail else [])
+    else:
+        first = [f"🎯 {label}"]
+        intervals = [s for s in (a["interval_summary"] or []) if s]
+        if intervals:
+            first.append(re.sub(r"(\d)w\b", r"\1 W", " + ".join(intervals[:2])))  # Intervals.icu writes "261w"
     lines = [" · ".join(first)]
 
     hours = (a["moving_time_sec"] or 0) / 3600
@@ -166,7 +173,6 @@ def build_facts(a: dict) -> tuple[str, str]:
     if day in by_day and (day - timedelta(days=1)) in by_day:
         lines.append(f"📈 Fitness {by_day[day - timedelta(days=1)]:.1f} → {by_day[day]:.1f}")
 
-    planned = _pushed_workout(a)
     if planned and planned["compliance"] is not None:
         lines.append(f"📋 Plan: {re.sub(r' [(]AI coach[)]$', '', planned['name'] or '')} · "
                      f"{planned['compliance']:.0f}% done")
@@ -185,6 +191,36 @@ def build_facts(a: dict) -> tuple[str, str]:
             else "notable - heat, fatigue or fuelling"))
     context.append(f"Training focus: {get_focus()['short']}.")
     return "\n".join(lines), "\n".join(context)
+
+
+def _clock(sec: float) -> str:
+    sec = int(round(sec))
+    return f"{sec // 60}m{sec % 60:02d}s" if sec % 60 else f"{sec // 60}m"
+
+
+def plan_label(name: str) -> str:
+    """"Threshold run 3x7 min (AI coach)" -> "Threshold run"; "Long ride 125 min + 2x10 SS" -> "Long ride"."""
+    name = re.sub(r" [(]AI coach[)]$", "", name)
+    return re.sub(r"\s+\d+\s*x.*$|\s+\d+\s*min.*$", "", name).strip() or name
+
+
+def run_target(hr_zones, moving_sec, planned: dict | None) -> tuple[str, str | None]:
+    """(label, detail) of the 🎯 line for a run. Intervals.icu's automatic interval detection
+    misses heart-rate reps on runs (it found "1x 6m24s 125bpm" in a 3x7 min threshold run), so
+    runs show the time actually spent in the hard HR zones instead - or the easy share. The label
+    is the planned session type when the run was done from a pushed workout (>= 80%)."""
+    zones = [float(x or 0) for x in (hr_zones or [])]
+    total = sum(zones)
+    if planned and planned.get("completed") and planned.get("name"):
+        label = plan_label(planned["name"])
+    else:
+        label = {"quality": "Quality run", "long": "Long run", "easy": "Easy run"}[run_kind(zones, moving_sec)]
+    hard = [f"{_clock(sec)} Z{i + 1}" for i, sec in enumerate(zones) if i >= 2 and sec >= 60]
+    if hard:
+        return label, " + ".join(reversed(hard)) + " HR"
+    if total:
+        return label, f"{round(100 * sum(zones[:2]) / total)}% in Z1-2 HR"
+    return label, None
 
 
 def _readiness() -> str:

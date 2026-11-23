@@ -23,7 +23,8 @@ RIDE_TYPES = {"Ride", "GravelRide", "MountainBikeRide", "VirtualRide"}
 RUN_TYPES = {"Run", "TrailRun", "VirtualRun"}
 
 # Minutes needed for a ride to count as that kind of session.
-VO2_MIN = 10        # power Z5 (or HR Z5+)
+VO2_MIN = 8         # power Z5+Z6 (or HR Z5+): 80% of the smallest VO2 dose, 5x2 min - the ramp
+                    # into each rep sits in Z4, the top of a rep can reach Z6
 SST_SS_MIN = 20     # Intervals.icu sweet-spot band
 SST_Z4_MIN = 15     # power Z4 (or HR Z4 >= SST_SS_MIN)
 
@@ -53,7 +54,7 @@ def classify(activity_type: str, power_zones, hr_zones) -> str | None:
 
     if power_zones:
         mins = {z["id"]: (z.get("secs") or 0) / 60 for z in power_zones}
-        if mins.get("Z5", 0) >= VO2_MIN:
+        if mins.get("Z5", 0) + mins.get("Z6", 0) >= VO2_MIN:
             return "vo2"
         if mins.get("SS", 0) >= SST_SS_MIN or mins.get("Z4", 0) >= SST_Z4_MIN:
             return "sst"

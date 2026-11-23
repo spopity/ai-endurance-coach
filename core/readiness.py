@@ -13,6 +13,10 @@ instead of cancelling it, as coaches do on "meh" days):
 - red: rest or easy only. Red needs a hard stop (illness, very deep fatigue, HRV well below
   normal, a HIGH non-running injury finding) or a cluster of 2+ recovery signals at once.
 
+Illness early warning (core/illness.py, from the night's heart rate, HRV, sleep stress and
+breathing rate): "watch" trims the day like a load signal (amber); a "warning", or "watch" with
+the athlete's "a bit off" check-in, is red.
+
 Running findings never set the level: they only limit running (`running.limit`), so a running
 warning moves the hard work to the bike instead of cancelling it.
 """
@@ -71,6 +75,15 @@ def sleep_status(today: date | None = None) -> dict | None:
             "poor_streak": streak, "signal": signal, "note": note}
 
 
+def illness_status() -> dict | None:
+    try:
+        from core.illness import current
+        return cached("illness", 300, current)
+    except Exception as e:
+        logger.warning(f"Illness early warning unavailable: {e}")
+        return None
+
+
 def running_limit(findings: list[dict]) -> dict:
     """What the running findings allow: 'none', 'no_hard_run' (caution) or 'easy_short' (high)."""
     run = [f for f in findings if f["area"] == "Running" and f["severity"] in ("high", "caution")]
@@ -86,7 +99,8 @@ def running_limit(findings: list[dict]) -> dict:
 
 
 def verdict(tsb: float | None, hrv: dict | None, findings: list[dict] | None = None,
-            subjective: tuple[list, list] | None = None, sleep: dict | None = None) -> tuple[str, str]:
+            subjective: tuple[list, list] | None = None, sleep: dict | None = None,
+            illness: dict | None = None) -> tuple[str, str]:
     """(level, one-line verdict) - level is 'red', 'amber' or 'green'. `findings` are the injury
     checks' findings (running ones are ignored here, see running_limit), `subjective` is (red, amber)
     reasons from the athlete's own feedback (core/feedback.signals), `sleep` is sleep_status()."""
@@ -110,6 +124,18 @@ def verdict(tsb: float | None, hrv: dict | None, findings: list[dict] | None = N
             red.append(f"injury-risk warning: {f['title']}")
         elif f["severity"] == "caution":
             (recovery if f["area"] in ("Recovery", "Subjective") else other).append(f["title"])
+    # Illness early warning (core/illness.py). "watch" trims the day as a load-type signal (it
+    # shares HRV with the HRV check, so it doesn't count towards the recovery cluster); with the
+    # athlete's "a bit off" it is red, and so is a "warning".
+    level = (illness or {}).get("level")
+    if level == "warning":
+        red.append(f"{illness['text']} ({', '.join(illness['signals'])})")
+    elif level == "watch":
+        if "feeling a bit off" in recovery:
+            recovery.remove("feeling a bit off")
+            red.append("early illness signs in last night's numbers and you feel a bit off")
+        else:
+            other.append(f"{illness['text']}: {', '.join(illness['signals'])}")
     if not red and len(recovery) >= RECOVERY_CLUSTER:
         red.append("several recovery signals together")
     if red:
@@ -138,13 +164,15 @@ def readiness_context(tsb: float | None) -> dict:
         logger.warning(f"Sleep status unavailable: {e}")
         sleep = None
     findings = (injury or {}).get("findings", [])
-    level, text = verdict(tsb, hrv, findings, subjective, sleep)
+    ill = illness_status()
+    level, text = verdict(tsb, hrv, findings, subjective, sleep, ill)
     return {
         "level": level,
         "verdict": text,
         "hrv_trend": ({"avg_7d": hrv["avg7"], "baseline": hrv["baseline"], "status": hrv["status"]} if hrv else None),
         "sleep": sleep and {k: v for k, v in sleep.items() if k != "signal"},
         "running": running_limit(findings),
+        "illness_warning": ill and ill["level"] != "none" and ill,
         "injury_overall": injury and injury["overall"],
         "injury_flags": [f"{f['severity'].upper()}: {f['title']}" for f in findings
                          if f["severity"] in ("high", "caution")],

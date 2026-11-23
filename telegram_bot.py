@@ -457,7 +457,17 @@ def body_buttons(day: str) -> InlineKeyboardMarkup:
     labels = {**feedback.BODY, "ill": "🤒 Ill"}
     keys = list(labels)
     return InlineKeyboardMarkup([[InlineKeyboardButton(labels[k], callback_data=f"fb:body:{day}:{k}") for k in keys[:4]],
-                                 [InlineKeyboardButton(labels[keys[4]], callback_data=f"fb:body:{day}:{keys[4]}")]])
+                                 [InlineKeyboardButton(labels[k], callback_data=f"fb:body:{day}:{k}") for k in keys[4:]]])
+
+
+def sleep_buttons(day: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"fb:sleep:{day}:{key}")
+                                  for key, label in feedback.SLEEP.items()]])
+
+
+def stress_buttons(day: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"fb:stress:{day}:{key}")
+                                  for key, label in feedback.STRESS.items()]])
 
 
 def motivation_buttons(day: str) -> InlineKeyboardMarkup:
@@ -533,15 +543,26 @@ async def on_feedback_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "(e.g. \"sick for 3 days\") and I'll keep the dates; normal training resumes by itself after them.")
                 await replan_and_send(context.bot, chat_id, "You're ill today")
             else:
-                await query.edit_message_text(f"Body: {feedback.BODY[value].lower()} ✓ - and motivation?",
-                                              reply_markup=motivation_buttons(key))
+                await query.edit_message_text(f"Body: {feedback.BODY[value].lower()} ✓ - how did you sleep?",
+                                              reply_markup=sleep_buttons(key))
+        elif step == "sleep":
+            await asyncio.to_thread(feedback.save_checkin, date.fromisoformat(key), sleep=value)
+            await query.edit_message_text(f"{query.message.text.split(' - ')[0]}, sleep: {feedback.SLEEP[value].lower()} ✓"
+                                          " - life stress right now (work, family)?", reply_markup=stress_buttons(key))
+        elif step == "stress":
+            await asyncio.to_thread(feedback.save_checkin, date.fromisoformat(key), stress=value)
+            await query.edit_message_text(f"{query.message.text.split(' - ')[0]}, stress: {feedback.STRESS[value].lower()} ✓"
+                                          " - and motivation?", reply_markup=motivation_buttons(key))
         elif step == "mot":
             day = date.fromisoformat(key)
             await asyncio.to_thread(feedback.save_checkin, day, motivation=value)
             c = await asyncio.to_thread(feedback.today_checkin, day)
-            await query.edit_message_text(f"Body: {feedback.BODY.get(c['body'], '?').lower()}, motivation: "
-                                          f"{feedback.MOTIVATION[value].lower()} ✓ Thanks!")
-            if c["body"] == "very_sore" or (c["body"] == "sore" and value == "low"):
+            await query.edit_message_text(
+                f"Body: {feedback.BODY.get(c['body'], '?').lower()}, sleep: {feedback.SLEEP.get(c['sleep'], '?').lower()}, "
+                f"stress: {feedback.STRESS.get(c['stress'], '?').lower()}, motivation: "
+                f"{feedback.MOTIVATION[value].lower()} ✓ Thanks!")
+            _, amber = await asyncio.to_thread(feedback.signals, day)
+            if amber:
                 await replan_and_send(context.bot, chat_id, "Taking your check-in into account")
     except Exception as e:
         logger.error("Feedback button failed", exc_info=True)

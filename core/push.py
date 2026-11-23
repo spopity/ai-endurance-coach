@@ -24,7 +24,7 @@ from core.feedback import signals as feedback_signals
 from core.injury_checks import run_injury_checks
 from core.overview import cached, hrv_status, query
 from core.periodization import CTL_GAIN_PER_WEEK, comeback, monday
-from core.readiness import sleep_status, verdict
+from core.readiness import illness_status, sleep_status, verdict
 
 logger = logging.getLogger("AI_COACH_V1.push")
 
@@ -144,7 +144,7 @@ def _signals() -> dict:
     except Exception as e:
         logger.warning(f"Sleep status unavailable: {e}")
         sleep = None
-    level, text = verdict(tsb, hrv_status(), None, subjective, sleep)
+    level, text = verdict(tsb, hrv_status(), None, subjective, sleep, illness_status())
     return {"body_level": level, "body_text": text,
             "findings": cached("injury", 300, run_injury_checks)["findings"]}
 

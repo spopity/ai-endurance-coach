@@ -220,10 +220,26 @@ instead of cancelling it (what coaches do on "meh" days):
     non-running injury finding;
   - a cluster: 2+ **recovery** signals at once (7-day HRV "below", 2+ poor nights in a row
     or one under 5 h, a Recovery or Subjective caution such as resting HR up, the
-    athlete's own amber feedback: very sore, sore + low motivation, sore legs after the last
-    hard session).
+    athlete's own amber feedback: very sore, sore + low motivation, "a bit off", a poor night
+    + high life stress, sore legs after the last hard session).
 - Load cautions (TSB −20, ACWR, monotony...) and single recovery signals are amber.
 - One poor night is only a note (`sleep.note`): keep the session, start with the warm-up test.
+- **Illness early warning** (`core/illness.py`, `illness_warning` in the context). Last night's
+  numbers are compared with the 28 nights before, skipping the last 2:
+  - overnight heart rate up (≥ +3 bpm and 2 SD);
+  - HRV down (≥ 5 ms and 1.5 SD) or Garmin sleep stress up (≥ 8 and 2 SD). These two count as
+    one "autonomic" signal;
+  - breathing rate while asleep up (≥ +1/min and 2 SD).
+
+  The levels are:
+  - **watch:** 2 of the 3 systems, or the autonomic signal 2 nights running. It is amber, as a
+    load-type signal, so it isn't counted twice with the HRV check in a cluster.
+  - **red:** "watch" together with the "a bit off" check-in, or a **warning**: all 3 systems, or
+    watch 2 nights running with heart or breathing still off.
+
+  Missing data (the watch off the wrist) only drops that signal. On the 2025-26 nights the
+  backtest gave 10 watch days and 1 warning in 13 months: heavy blocks, a late night, and the
+  first day of the June illness.
 - **Running findings never set the level.** `running_limit()` turns them into
   `running.limit`: `no_hard_run` (caution: easy runs, no extra running) or `easy_short`
   (high: easy runs of at most 30 min, or a ride instead).
@@ -334,7 +350,7 @@ disagree. Rules:
   - Base keeps a little intensity: early Base a weekly sprint/VO2 touch inside an
     endurance ride, late Base adds a tempo session.
 - Completed sessions are classified from Intervals.icu zone times:
-  - Rides are VO2 (≥10 min in Z5), sweet spot (≥20 min SS or ≥15 min Z4), or endurance.
+  - Rides are VO2 (≥8 min in power Z5+Z6: 80% of a 5x2, whose ramps sit in Z4), sweet spot (≥20 min SS or ≥15 min Z4), or endurance.
   - Runs, weights, and other types are counted separately.
 - **Training focus** (dashboard toggle):
   - `cycling`: FTP first, running is maintenance.
@@ -474,6 +490,10 @@ Every 10 minutes the timer looks for activities of **any type** that are at leas
   Gemini sentences that compare what was done with what was planned and say what the
   session did for the body. They never say what comes next (that is on the dashboard and
   Telegram), but the timer still triggers the next-session decision.
+- **The 🎯 line:** the session type, and the planned type ("Threshold run", "VO2max") when it was
+  done from a pushed workout. Rides add Intervals.icu's detected intervals. Runs don't, because
+  that detection misses heart-rate reps; they show the time in HR Z3+ ("16m30s Z4 + 6m28s Z3 HR")
+  or, for easy runs, the share in Z1-2 (`run_target`).
 - **What was planned** (`planned_for`): the session pinned to that day, else the next
   session that stood when the day started (decided after the last activity of an earlier
   day). Walks and hikes have no plan (a "bonus outing"). Other sessions of the same day are
@@ -573,6 +593,13 @@ service flow chart, busy hours, per-component token table, and the latest calls.
   and race planner; the Intervals.icu workouts scale their % targets to it (Intervals reads %
   of its own set FTP); and `metrics.ftp_history()` applies the same rule to every past ride, so
   progression and the progress check judge each ride against the FTP of that day.
+- **Morning check-in** (migration 018): body (fresh / normal / sore / very sore / a bit off /
+  ill), the night (good / ok / poor), life stress (low / normal / high: work, family) and
+  motivation. It is a short Hooper-style well-being check, four taps after the briefing.
+  - "A bit off" is the athlete's half of the illness early warning (§4.3).
+  - A poor night together with high stress trims the day; either one alone is context for the
+    coach only.
+  - Any amber answer re-plans.
 - **Feedback** (tables `session_feedback`, `daily_checkin`, migration 016 - kept apart
   from `activities.rpe/feel`, which Intervals.icu overwrites): Telegram buttons only,
   so no number comes from a model. RPE and legs are asked after **hard, long and gym
@@ -667,7 +694,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (115 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (136 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |
@@ -701,6 +728,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `history_stats.py` | Local calculators for the history analyst: wellness stats/series/period comparison, training volume and workout-type mix (steady vs variable by IF/VI), biggest CTL-gain windows, race detection + pacing | Every history number is computed here, not by the LLM |
 | `pacing.py` | Power fade/pacing per quarter from Intervals.icu watts streams (cached) | "Did my power hold to the end?" |
 | `overview.py` | The shared overview (form, HRV status, week load vs plan, next race), a small TTL cache, the read-only query helper | Keeps the dashboard and briefing numbers identical |
+| `illness.py` | Illness early warning: last night's heart rate, HRV / sleep stress and breathing rate vs the athlete's own 28-night normal; watch / warning | Catches an infection before training on it |
 | `readiness.py` | The green/amber/red verdict from TSB, the HRV trend, sleep, the injury findings and the athlete's feedback (single signals trim, clusters stop); the running limit | The single "can I train hard?" answer |
 | `mechanical.py` | Impact load: running, hills and leg day in km-equivalents, its acute:chronic EWMA ratio next to the cardio ratio | The second load stream; limits running, not riding |
 | `injury_checks.py` | Deterministic risk checks (load, intensity distribution, recovery, drift, biomechanics, subjective, running) against personal baselines, plus text/Markdown renderers | Injury agent, coach tool, dashboard card, readiness input |
@@ -786,6 +814,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `014_readonly_role.sql` | The `coach_reader` role: SELECT on `activities`, `daily_metrics`, `training_blocks`, `athlete_profile` only; read-only, 15 s timeout |
 | `015_garmin_health.sql` | Garmin health columns on `daily_metrics` (sleep stages/timing, HRV status and baseline, stress, Body Battery, respiration, SpO2, daily activity, Fitness Age, `garmin_payload`) |
 | `016_athlete_feedback.sql` | `session_feedback` (RPE, legs per activity) and `daily_checkin` (body, motivation per day), readable by `coach_reader` |
+| `018_checkin_sleep_stress.sql` | `daily_checkin`: `sleep` and `stress` answers, body option `off` ("a bit off") |
 | `017_gym_sets.sql` | `gym_sets`: logged lifts (exercise, kg, reps, sets) per day, linked to that day's gym activity |
 
 ### `deploy/`: systemd units (copied to `/etc/systemd/system/`)
