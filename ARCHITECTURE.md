@@ -436,8 +436,12 @@ every sync.
   are pooled per sport and binned by heart rate (and power on the bike); LT1 is where the
   binned median alpha1 first falls through 0.75 (Rogers et al. 2021). Quality gate: the
   curve must start at 1.0 or more and must not climb back over 0.9 after the crossing -
-  wrist/noisy RR or cadence coupling does that, and such data is reported as unreliable,
-  not used. Per-activity windows are cached (`state/dfa_windows.json`).
+  noisy RR does that, and such data is reported as unreliable, not used. Runs: heart rate
+  locks to the step rate when the two are close (cardiolocomotor coupling - at ~160
+  steps/min exactly the threshold range), so run windows within 20 bpm of the step rate are
+  dropped, and a run LT1 more than 5 bpm under the bike LT1 isn't trusted. Per-activity
+  windows are cached (`state/dfa_windows.json`); indoor rides without RR are counted, and
+  Telegram says when the first indoor ride with RR arrives (e.g. a new indoor app).
 - **Zone 2** goes up to 95% of the LT1 power, kept within 70-82% of FTP; without a measured
   LT1 power it stays 56-75% (the plan's watts, and the workouts' % steps 3 points below).
   Easy runs stay under the run LT1 when it's measured, else under the top of HR Z2.
@@ -735,7 +739,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (157 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed). Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (160 tests): the 7-day plan (spacing, adapting, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed). Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |

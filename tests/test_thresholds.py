@@ -60,3 +60,25 @@ def test_changes_announce_a_new_zone_2_and_a_cs_test():
     assert T.changes(after, after) is None
     bad = {"ftp": 300, "ride": {"watts": 252}, "cs": {"source": "training", "test_unusable": "2026-12-08"}}
     assert "no usable critical speed" in T.changes(after, bad)
+
+
+def test_run_windows_locked_to_the_step_rate_are_dropped():
+    assert T.coupled([155, 1.05, None, 81])          # 162 steps/min, heart rate 155
+    assert not T.coupled([135, 0.8, None, 81])
+    assert not T.coupled([155, 1.05, 250, None])     # rides: no cadence check
+
+
+def test_run_lt1_far_below_the_bike_is_not_trusted():
+    def acts(points):
+        return [{"day": "2026-11-0%d" % i, "windows": [[x, a, None, 90] for x, a in points.items()] * 2}
+                for i in range(1, 5)]
+    pts = {126: 1.3, 130: 1.2, 134: 0.95, 138: 0.7, 142: 0.6}
+    assert T.lt1(acts(pts), "run", bike_hr=158)["status"] == "unreliable"
+    assert T.lt1(acts(pts), "run", bike_hr=138)["hr"] == 137
+
+
+def test_first_indoor_ride_with_rr_is_announced():
+    before = {"indoor_rr": {"with": 0, "without": 12, "last_with": None}}
+    after = {"indoor_rr": {"with": 1, "without": 12, "last_with": "2027-02-02"}}
+    assert "Indoor rides now carry beat-to-beat" in T.changes(before, after)
+    assert T.changes(after, after) is None

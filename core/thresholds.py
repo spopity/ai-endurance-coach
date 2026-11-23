@@ -11,9 +11,14 @@ MAX_ARTIFACTS of its beats more than 20% off the local median - those beats are 
 The windows of the last LOOKBACK_DAYS are pooled per sport and binned by heart rate (and by
 power on the bike); LT1 is where the binned median alpha1 first falls through 0.75. Pooling
 makes it robust - one ride with a few odd windows doesn't move it. Quality gate: the curve must
-start well above (>= 1.0) and must not climb back over REBOUND after the crossing - optical/wrist
-RR or cadence coupling makes alpha1 rebound at high heart rates, and such data is reported as
-unreliable rather than used.
+start well above (>= 1.0) and must not climb back over REBOUND after the crossing - noisy RR
+makes alpha1 rebound at high heart rates, and such data is reported as unreliable rather than used.
+
+Running has its own confounder: heart rate locks to the step rate (cardiolocomotor coupling) when
+the two are close - at ~160 steps/min that is exactly the threshold range, and alpha1 climbs back
+towards 1. Run windows with heart rate within COUPLING_BPM of the step rate are dropped, and a run
+LT1 more than RUN_BELOW_BIKE_BPM under the bike LT1 isn't trusted (running thresholds sit at or a
+little above cycling ones); easy runs then keep the HR-zone cap.
 
 Zone 2 is anchored on it: its top is 95% of the LT1 power (just under LT1, with room for drift),
 kept within Z2_TOP_BOUNDS of the FTP; without a reliable LT1 it stays the classic 75% of FTP.
@@ -56,6 +61,9 @@ REBOUND = 0.9            # ...and no bin past the crossing may climb back over t
 HR_BIN, WATT_BIN = 4, 20
 MIN_BIN = 5              # windows per bin
 MIN_ACTIVITIES = 4
+COUPLING_BPM = 20        # run windows with heart rate this close to the step rate are dropped
+RUN_BELOW_BIKE_BPM = 5   # a run LT1 further below the bike LT1 isn't trusted
+CACHE_VERSION = 2        # windows: [hr, alpha1, watts, cadence]
 LOOKBACK_DAYS = 90
 Z2_TOP_DEFAULT = 0.75
 Z2_TOP_BOUNDS = (0.70, 0.82)
@@ -98,8 +106,8 @@ def dfa_a1(rr: list[float]) -> float:
     return _slope(log_n, log_f) if len(log_n) >= 4 else float("nan")
 
 
-def windows(hrv: list, watts: list | None = None) -> list[list[float]]:
-    """[[heart rate, alpha1, watts or None], ...] of the clean, stationary 2-min windows.
+def windows(hrv: list, watts: list | None = None, cadence: list | None = None) -> list[list[float]]:
+    """[[heart rate, alpha1, watts or None, cadence or None], ...] of the clean, stationary 2-min windows.
     `hrv` is Intervals.icu's per-second list of the RR intervals (ms) that ended in that second."""
     beats = [(i, float(v)) for i, sec in enumerate(hrv or []) if sec for v in sec if v]
     if len(beats) < MIN_BEATS:
@@ -127,7 +135,9 @@ def windows(hrv: list, watts: list | None = None) -> list[list[float]]:
         if math.isnan(a1):
             continue
         w = [x for x in (watts or [])[start:start + WINDOW_SEC] if x is not None]
-        out.append([round(60000 / statistics.fmean(clean), 1), round(a1, 3), round(statistics.fmean(w)) if w else None])
+        c = [x for x in (cadence or [])[start:start + WINDOW_SEC] if x]
+        out.append([round(60000 / statistics.fmean(clean), 1), round(a1, 3), round(statistics.fmean(w)) if w else None,
+                    round(statistics.fmean(c), 1) if c else None])
     return out
 
 
@@ -145,15 +155,28 @@ def crossing(points: list[tuple[float, float]], width: float) -> tuple[float | N
         (x0, a0), (x1, a1) = curve[i - 1], curve[i]
         if a1 <= LT1_ALPHA:
             if any(a > REBOUND for _, a in curve[i + 1:]):
-                return None, "alpha1 climbs back at high heart rates (wrist or noisy RR data - a chest strap fixes it)"
+                return None, "alpha1 climbs back at high heart rates (noisy RR data)"
             return round(x0 + (a0 - LT1_ALPHA) / (a0 - a1) * (x1 - x0), 1), "ok"
     return None, "no stretches hard enough to cross LT1"
 
 
-def lt1(sport_windows: list[dict], sport: str, ftp: float | None = None) -> dict:
-    """LT1 from the pooled windows of one sport (each item: day, windows)."""
+def coupled(w: list) -> bool:
+    """A run window whose heart rate is within COUPLING_BPM of the step rate (cadence is per leg
+    below 120, steps above)."""
+    cad = w[3] if len(w) > 3 else None
+    if not cad:
+        return False
+    steps = cad * 2 if cad < 120 else cad
+    return abs(w[0] - steps) < COUPLING_BPM
+
+
+def lt1(sport_windows: list[dict], sport: str, ftp: float | None = None, bike_hr: float | None = None) -> dict:
+    """LT1 from the pooled windows of one sport (each item: day, windows). Runs drop the windows
+    locked to the step rate and are checked against the bike LT1 (`bike_hr`)."""
     acts = [a for a in sport_windows if a["windows"]]
     pts = [w for a in acts for w in a["windows"]]
+    if sport == "run":
+        pts = [w for w in pts if not coupled(w)]
     out = {"sport": sport, "activities": len(acts), "windows": len(pts), "hr": None, "watts": None,
            "since": min((a["day"] for a in acts), default=None), "status": "insufficient"}
     if len(acts) < MIN_ACTIVITIES:
@@ -162,6 +185,11 @@ def lt1(sport_windows: list[dict], sport: str, ftp: float | None = None) -> dict
     hr, why = crossing([(w[0], w[1]) for w in pts], HR_BIN)
     if hr is None:
         out.update(status="unreliable" if "climbs back" in why else "insufficient", reason=why)
+        return out
+    if sport == "run" and bike_hr and hr < bike_hr - RUN_BELOW_BIKE_BPM:
+        out.update(status="unreliable", estimate=round(hr), reason=(
+            f"{hr:.0f} bpm is well below the bike LT1 ({bike_hr:.0f}) - heart rate locks to the step rate when "
+            "running, so the run estimate isn't trusted"))
         return out
     out.update(hr=round(hr), status="ok", reason="ok")
     if sport == "ride":
@@ -257,7 +285,7 @@ def _write(path: str, data: dict):
 
 
 def _streams(env: dict, external_id: str) -> dict:
-    r = requests.get(f"{API}/activity/{external_id}/streams.json", params={"types": "hrv,watts"},
+    r = requests.get(f"{API}/activity/{external_id}/streams.json", params={"types": "hrv,watts,cadence"},
                      auth=("API_KEY", env["INTERVALS_API_KEY"]), timeout=60)
     r.raise_for_status()
     return {s["type"]: s.get("data") or [] for s in r.json()}
@@ -273,16 +301,18 @@ def update(today: date | None = None) -> dict:
                     WHERE superseded_by IS NULL AND type = ANY(%s) AND start_time::date >= %s
                     ORDER BY start_time;""", (list(RIDE_TYPES + RUN_TYPES), today - timedelta(days=LOOKBACK_DAYS)))
     cache = _read(WINDOWS_CACHE)
+    if cache.get("_version") != CACHE_VERSION:
+        cache = {"_version": CACHE_VERSION}
     for r in rows:
         key = str(r["external_id"])
         if key in cache:
             continue
         try:
             st = _streams(env, key)
-            cache[key] = windows(st.get("hrv"), st.get("watts"))
+            cache[key] = windows(st.get("hrv"), st.get("watts"), st.get("cadence"))
         except Exception as e:
             logger.warning(f"RR stream of {key} unavailable: {e}")
-    keep = {str(r["external_id"]) for r in rows}
+    keep = {str(r["external_id"]) for r in rows} | {"_version"}
     cache = {k: v for k, v in cache.items() if k in keep}
     _write(WINDOWS_CACHE, cache)
 
@@ -298,7 +328,15 @@ def update(today: date | None = None) -> dict:
         logger.warning(f"Critical speed unavailable: {e}")
         cs = (_read(STATE).get("cs") or {"cs": None, "source": None})
     state = {"updated": datetime.now().isoformat(timespec="minutes"), "ftp": t.get("ftp"),
-             "ride": lt1(by_sport["ride"], "ride", t.get("ftp")), "run": lt1(by_sport["run"], "run"), "cs": cs}
+             "ride": lt1(by_sport["ride"], "ride", t.get("ftp")), "cs": cs}
+    state["run"] = lt1(by_sport["run"], "run", bike_hr=state["ride"].get("hr"))
+    indoor = [r for r in rows if r["type"] == "VirtualRide"]
+    state["indoor_rr"] = {"with": sum(1 for r in indoor if cache.get(str(r["external_id"]))),
+                          "without": sum(1 for r in indoor if not cache.get(str(r["external_id"]))),
+                          "last_with": next((r["day"].isoformat() for r in reversed(indoor)
+                                             if cache.get(str(r["external_id"]))), None),
+                          "last_without": next((r["day"].isoformat() for r in reversed(indoor)
+                                                if not cache.get(str(r["external_id"]))), None)}
     _write(STATE, state)
     return state
 
@@ -346,6 +384,9 @@ def changes(before: dict, after: dict) -> str | None:
     if abs(new_top - old_top) >= 0.02:
         out.append(f"Zone 2 now goes up to {new_top * 100:.0f}% FTP (was {old_top * 100:.0f}%): LT1 measured at "
                    f"{(after.get('ride') or {}).get('watts')} W from the beat-to-beat data.")
+    rr_old, rr_new = before.get("indoor_rr") or {}, after.get("indoor_rr") or {}
+    if rr_new.get("last_with") and rr_new["last_with"] != rr_old.get("last_with") and not rr_old.get("with"):
+        out.append("Indoor rides now carry beat-to-beat (RR) data - they count towards LT1 and Zone 2 from now on.")
     cs_old, cs_new = before.get("cs") or {}, after.get("cs") or {}
     if cs_new.get("source") == "test" and cs_new.get("day") != cs_old.get("day"):
         out.append(f"CS test read: critical speed {cs_new['pace']}/km (D' {cs_new['d_prime']} m) - the sub-threshold "
