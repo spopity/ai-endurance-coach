@@ -181,3 +181,38 @@ def test_scale_gap():
     assert "scale" in devices.scale_gap(regular, TODAY)
     assert devices.scale_gap(regular + [TODAY - timedelta(days=2)], TODAY) == {}
     assert devices.scale_gap([TODAY - timedelta(days=200)], TODAY) == {}
+
+
+# --- races and both goals ---
+
+def test_hm_goal_on_maintenance_with_cycling_focus():
+    g = {"pace_sec_km": 280}
+    pred = {"time": 6500, "pace": 308, "source": "x"}
+    assert goals.hm_status(g, pred, 60, focus="cycling")["status"] == "maintenance"
+    assert goals.hm_status(g, pred, 60, focus="dual")["status"] == "building"
+    race = {"name": "City Half", "date": "2027-03-14", "priority": "A"}
+    with_race = goals.hm_status(g, pred, 60, focus="cycling", race=race, today=TODAY)
+    assert with_race["status"] == "building" and "City Half" in with_race["text"]
+
+
+def test_run_race_shapes_race_prep_and_taper():
+    from core.periodization import mix_kind, SESSIONS
+    wk = date(2027, 3, 1)
+    run_race = [{"priority": "A", "date": "2027-04-11", "type": "Run", "name": "HM"}]
+    bike_race = [{"priority": "A", "date": "2027-04-11", "type": "Ride", "name": "GF"}]
+    assert mix_kind("specific", wk, run_race) == "specific_run"                       # 6 weeks out: 2 runs
+    assert mix_kind("specific", date(2027, 3, 22), run_race) == "specific_run_peak"   # 3 weeks out: 3 runs
+    assert mix_kind("taper", date(2027, 4, 5), run_race) == "taper_run"
+    assert mix_kind("specific", wk, bike_race) == "specific"
+    assert mix_kind("build_2", wk, run_race) == "build_2"
+    assert max(SESSIONS[k]["run"] for k in SESSIONS) <= 3                              # never more than 3 runs
+
+
+def test_dual_focus_keeps_two_runs_before_a_bike_race():
+    from core.focus import adjust_sessions, DUAL_RUNS
+    from core.periodization import SESSIONS
+    bike = adjust_sessions(SESSIONS["specific"], False, "dual", "Race prep")
+    assert bike["run"] == DUAL_RUNS - 1
+    run = adjust_sessions(SESSIONS["specific_run_peak"], False, "dual", "Race prep")
+    assert run["run"] == DUAL_RUNS
+    assert adjust_sessions(SESSIONS["specific"], False, "cycling", "Race prep")["run"] == 1

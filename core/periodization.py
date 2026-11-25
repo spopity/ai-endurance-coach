@@ -30,6 +30,11 @@ machine:
   the week before, a race week with openers and a recovery week after; within
   RACE_BUILD_WEEKS of it, Build starts early (from BASE_EARLY_WEEKS completed base
   weeks). A B race gets a mini-taper in its own week; C races are just hard sessions.
+  The race's sport shapes those weeks (mix_kind): before a run A race the race-specific weeks
+  put the run first - 2 runs 6-4 weeks out, 3 (never more) in the last 2-3 weeks, the bike kept
+  for aerobic volume and one quality ride - and the taper cuts run volume but keeps race pace.
+  Before a bike race they stay bike-specific, with running as maintenance (core/focus.py keeps
+  2 runs in dual mode so the run goal isn't lost).
   Without races the plan works towards fitness and FTP (GOAL_NO_RACE).
 - Days the athlete can't train (core/availability.py: sick / away) shrink that week's
   targets pro rata; a week with at most 2 days available is "away" - rest, nothing lost.
@@ -115,6 +120,13 @@ FOCUS = {
               "the days before, an easy day or rest the day before. The race is the week's key session.",
     "race_b": "Race week (B race) - normal training until 3 days out, then easy with openers. The race is the "
               "week's hard session.",
+    "specific_run": "Race prep (run race) - the run comes first: the long run builds towards race time and one "
+                    "quality run works at race pace / sub-threshold; rides are Zone 2 volume plus one quality ride. "
+                    "Runs build up from 2 a week.",
+    "specific_run_peak": "Race prep (run race), last weeks - 3 runs: the long run, race-pace work (e.g. 3 x 3 km at "
+                         "goal pace) and an easy run; rides easy plus one quality ride. Quality over volume.",
+    "taper_run": "Taper (run race) - run volume down about 40%, race pace kept: a short race-pace session (e.g. "
+                 "4 x 1 km at goal pace) and strides; short easy rides. No long run.",
 }
 # Planned session mix (cycling focus - dual mode adds runs on top, see core/focus.py).
 SESSIONS = {
@@ -128,7 +140,37 @@ SESSIONS = {
     "taper": {"endurance": 2, "sst": 0, "vo2": 1, "run": 1, "weights": 1},
     "race_a": {"endurance": 2, "sst": 0, "vo2": 0, "run": 0, "weights": 0},
     "race_b": {"endurance": 2, "sst": 1, "vo2": 0, "run": 1, "weights": 2},
+    "specific_run": {"endurance": 2, "sst": 1, "vo2": 0, "run": 2, "weights": 2},
+    "specific_run_peak": {"endurance": 2, "sst": 1, "vo2": 0, "run": 3, "weights": 2},
+    "taper_run": {"endurance": 2, "sst": 0, "vo2": 0, "run": 2, "weights": 1},
 }
+RUN_RACE_TYPES = {"Run", "TrailRun", "VirtualRun"}
+RUN_PEAK_WEEKS = 3                   # run race: 3 runs a week from this many weeks out
+
+
+def race_sport(wk: date, races: list[dict]) -> tuple[str | None, int | None]:
+    """(sport, weeks out) of the A/B race the week works towards: its own race, else the next A race."""
+    def week_of(r):
+        return monday(date.fromisoformat(r["date"]))
+    key = sorted((r for r in races if r.get("priority") in ("A", "B") and r.get("date")), key=lambda r: r["date"])
+    here = next((r for r in key if week_of(r) == wk), None)
+    nxt = here or next((r for r in key if r["priority"] == "A" and week_of(r) > wk), None)
+    if not nxt:
+        return None, None
+    return ("run" if nxt.get("type") in RUN_RACE_TYPES else "ride"), (week_of(nxt) - wk).days // 7
+
+
+def mix_kind(kind: str, wk: date, races: list[dict]) -> str:
+    """The kind whose focus text and session mix the week gets: the run variant of race prep and
+    taper before a run race."""
+    if kind not in ("specific", "taper"):
+        return kind
+    sport, weeks_out = race_sport(wk, races)
+    if sport != "run":
+        return kind
+    if kind == "taper":
+        return "taper_run"
+    return "specific_run_peak" if weeks_out is not None and weeks_out <= RUN_PEAK_WEEKS else "specific_run"
 
 
 @dataclass
@@ -521,7 +563,7 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
         lo, hi = week_targets(kind, ctl_start, free, comeback(ctl_start, wk), benchmark_top(bench, ctl_start))
         load, days = weeks.get(wk, (0.0, 0))
         verdict = judge(kind, load, days, lo, hi, free)
-        rows.append(_row(wk, s.phase, kind, lo, hi, verdict, _why(why, reason, free), load))
+        rows.append(_row(wk, s.phase, kind, lo, hi, verdict, _why(why, reason, free), load, races))
         reason = advance(s, kind, verdict, load, hi, 7 * ctl_start, ctl_end,
                          aerobic_ready(steady, wk + timedelta(days=6)))
         last_ctl = ctl_end
@@ -546,7 +588,7 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
         if back:
             text += (f"; comeback ramp (+{COMEBACK_RAMP:g} CTL/week while CTL is under {COMEBACK_CTL:g}, "
                      "at most your top weeks at this fitness in 2022-24)")
-        rows.append(_row(wk, s.phase, kind, lo, hi, None, text, None))
+        rows.append(_row(wk, s.phase, kind, lo, hi, None, text, None, races))
         load, days = (lo + hi) / 2, free
         if i == 0:
             days_left = available(wk, after=today)
@@ -568,13 +610,14 @@ def _why(why: str | None, reason: str, available_days: int = 7) -> str:
     return text
 
 
-def _row(wk, phase, kind, lo, hi, verdict, reason, load) -> dict:
+def _row(wk, phase, kind, lo, hi, verdict, reason, load, races: list[dict] | None = None) -> dict:
     deload = kind == "recovery"
+    mk = mix_kind(kind, wk, races or [])
     return {
         "start_date": wk, "end_date": wk + timedelta(days=6),
         "phase": RACE_PHASES.get(kind) or ("Recovery" if deload else phase), "is_deload": deload,
         "target_weekly_load_min": lo, "target_weekly_load_max": hi,
-        "primary_focus": FOCUS[kind], "sessions": json.dumps(SESSIONS[kind]),
+        "primary_focus": FOCUS[mk], "sessions": json.dumps(SESSIONS[mk]),
         "status": verdict, "notes": reason, "actual_load": round(load) if load is not None else None,
     }
 

@@ -126,6 +126,11 @@ def adjust_sessions(sessions: dict | None, is_deload: bool, mode: str, phase: st
         return {"endurance": DUAL_RIDES_DELOAD, "sst": 0, "vo2": 0, "run": DUAL_RUNS_DELOAD, "weights": DUAL_GYM_DELOAD}
     vo2 = min(int(sessions.get("vo2", 0)), MAX_BIKE_QUALITY)
     sst = min(int(sessions.get("sst", 0)), MAX_BIKE_QUALITY - vo2)
+    if phase == "Race prep" and int(sessions.get("run", 0)) < 2:
+        # Before a BIKE A race the bike comes first: running drops to 2 (the long run + an easy
+        # run keep the run base), the third run becomes a ride. Run race prep keeps its own runs.
+        return {"endurance": DUAL_RIDES + 1 - sst - vo2, "sst": sst, "vo2": vo2, "run": DUAL_RUNS - 1,
+                "weights": DUAL_GYM}
     return {"endurance": DUAL_RIDES - sst - vo2, "sst": sst, "vo2": vo2, "run": DUAL_RUNS,
             "weights": DUAL_GYM_BASE if phase == "Base" else DUAL_GYM}
 

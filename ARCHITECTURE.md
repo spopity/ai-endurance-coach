@@ -342,7 +342,10 @@ disagree. Rules:
     (Build starts early within 12 weeks, from 3/6 base weeks), "Taper" the week before
     (70–85% of the holding load, intensity kept), the "Race" week with openers (55–80%),
     then a recovery week; within 3 weeks of it the taper replaces a calendar deload. B race: a
-    mini-taper in its own week. C races are hard sessions. **No A/B race:** the plan
+    mini-taper in its own week. C races are hard sessions.
+    - **Run A race** (`mix_kind`): race prep becomes run-first, with 2 runs a week 6-4 weeks out and 3 in the last 3 (even with the cycling focus). The taper cuts run volume but keeps race pace.
+    - **Bike A race in dual focus:** race prep keeps 2 runs instead of 3 (`core/focus.py`).
+    **No A/B race:** the plan
     works towards fitness and FTP (`GOAL_NO_RACE`, `current_training_block.goal`).
   - **Days off from the availability file** (§4.11) scale that week's targets pro rata;
     with at most 2 days available the week is "away" (rest, nothing lost, not counted
@@ -770,6 +773,14 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
     - 93% of critical speed, when a CS test measured it.
   - **Endurance:** the longest run of the last 6 weeks vs 85% of the race time at the target pace.
   - **Status:** ready (within 3 s/km and endurance there) / close (within 15 s/km) / building.
+- **Cycling focus:** the half-marathon goal goes "on maintenance": tracked, but never pushed (1 run a week, for bone health).
+- **Races:** an A/B run race of 15-25 km gives the half-marathon goal its date.
+- **Priorities** (in the coach's "Goals" line and its rule 16):
+  - an A race first; its sport shapes the race-specific weeks;
+  - then the goals by `priority`: FTP first, half marathon second.
+  - Both goals are kept through a race season:
+    - before a bike race: Build blocks and the post-race FTP test for the FTP goal, 2 runs in dual-focus race prep for the run goal;
+    - before a run race: the run-race weeks.
 - **Nightly:** `update()` writes `state/goals_status.json` and sends Telegram when a status changes.
 - **Where it shows:** `/progress`, `GET /api/goals` (the dashboard's plan card), and the coach's context ("Goals" line). The coach quotes the status and doesn't change the plan to chase it.
 
@@ -812,7 +823,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (183 tests): the 7-day plan (spacing, adapting, two sessions on one day, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed), daily carbs, the low-energy check, goals, the adjustment review and the device check. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (186 tests): the 7-day plan (spacing, adapting, two sessions on one day, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed), daily carbs, the low-energy check, goals, the adjustment review and the device check. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |

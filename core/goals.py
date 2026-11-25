@@ -3,8 +3,18 @@ The athlete's measurable goals and whether the training is on the way there.
 
 The goals live in state/goals.json (personal - never in the code or the public copy):
 
-    {"ftp": {"target_w": 0, "above": true, "by": "YYYY-MM-DD", "start": "YYYY-MM-DD", "start_w": 0},
-     "half_marathon": {"pace_sec_km": 0}}
+    {"ftp": {"target_w": 0, "above": true, "by": "YYYY-MM-DD", "start": "YYYY-MM-DD", "start_w": 0,
+             "best_w": 0, "priority": 1},
+     "half_marathon": {"pace_sec_km": 0, "priority": 2}}
+
+Priorities (how the goals and races share the season): an A race on the Intervals.icu calendar
+comes first - the plan (core/periodization.py) builds towards it, and its sport shapes the
+race-specific weeks. Then the goals by `priority` (1 first). They are kept, not dropped:
+- the FTP goal is served by the Build blocks and the test calendar around any race (a race
+  before the goal date is a fitness check; the recovery week after it ends with an FTP test),
+- the half-marathon goal is kept by the long run while the focus is dual; with the cycling
+  focus (1 run a week, for bone health) it is on maintenance - tracked, never pushed. A run race
+  of 15-25 km (A/B) becomes its date: the plan's run-race weeks prepare it, whatever the focus.
 
 FTP goal - a straight path from the FTP when the goal was set (start_w) to the target on the
 date. The measured FTP follows the FTP rule (core/metrics.py): the tested FTP for 8 weeks,
@@ -46,7 +56,9 @@ READY_SEC, CLOSE_SEC = 3, 15
 ENDURANCE_SHARE = 0.85
 LONG_RUN_DAYS = 42
 STATUS_TEXT = {"reached": "✅ reached", "ahead": "ahead of the path", "on_track": "on track",
-               "behind": "behind the path", "ready": "✅ ready", "close": "close", "building": "building"}
+               "behind": "behind the path", "ready": "✅ ready", "close": "close", "building": "building",
+               "maintenance": "on maintenance"}
+RUN_TYPES = {"Run", "TrailRun", "VirtualRun"}
 
 
 def load() -> dict:
@@ -94,6 +106,8 @@ def ftp_status(goal: dict, measured: float | None, measured_day: date | None, ef
     weeks_left = max(0.0, (by - today).days / 7)
     per_week = (target - measured) / weeks_left if weeks_left and measured < target else 0.0
     label = f"FTP {'above ' + str(goal['target_w']) if goal.get('above') else goal['target_w']} W by {by:%d %b %Y}"
+    if goal.get("best_w"):
+        label += f" (best so far {goal['best_w']} W)"
     text = (f"{label}: {STATUS_TEXT[status]} - {measured:.0f} W"
             + (f" (tested {on:%d %b})" if measured_day else " (eFTP)")
             + f" vs {expected:.0f} W on the path")
@@ -133,22 +147,35 @@ def hm_prediction(distances: list[float], secs: list[float], cs: dict | None) ->
     return {"time": round(t), "pace": round(t / (HM_M / 1000)), "source": src}
 
 
-def hm_status(goal: dict, prediction: dict | None, longest_run_min: float | None) -> dict | None:
+HM_RACE_KM = (15, 25)
+
+
+def hm_status(goal: dict, prediction: dict | None, longest_run_min: float | None, focus: str = "dual",
+              race: dict | None = None, today: date | None = None) -> dict | None:
+    """`focus` cycling -> maintenance (tracked, not pushed) unless `race` (an A/B run race of
+    15-25 km) gives the goal a date."""
     if not goal or not goal.get("pace_sec_km"):
         return None
     target = float(goal["pace_sec_km"])
     need_min = round(target * HM_M / 1000 / 60 * ENDURANCE_SHARE)
     label = f"Half marathon at {mmss(target)}/km ({hms(target * HM_M / 1000)})"
+    if race:
+        weeks = (date.fromisoformat(race["date"]) - (today or date.today())).days // 7
+        label += f" - {race['priority']} race {race['name']} on {race['date']} (in {weeks} weeks)"
     if not prediction:
         return {"goal": label, "status": "building", "text": f"{label}: no recent run data to predict it"}
     gap = prediction["pace"] - target
     endurance = bool(longest_run_min and longest_run_min >= need_min)
     status = "ready" if gap <= READY_SEC and endurance else "close" if gap <= CLOSE_SEC else "building"
+    if focus == "cycling" and not race and status != "ready":
+        status = "maintenance"
     long_txt = f"longest run {longest_run_min:.0f} min" if longest_run_min else "no long run"
     text = (f"{label}: {STATUS_TEXT[status]} - predicted {mmss(prediction['pace'])}/km "
             f"({hms(prediction['time'])}, from {prediction['source']})"
             + (f", {gap:+.0f} s/km to go" if gap > 0 else "")
-            + f"; endurance: {long_txt} of the 6 weeks" + (" ✓" if endurance else f", needs ~{need_min} min"))
+            + f"; endurance: {long_txt} of the 6 weeks" + (" ✓" if endurance else f", needs ~{need_min} min")
+            + ("; cycling focus: 1 run a week keeps bones and tendons, the goal is tracked, not pushed"
+               if status == "maintenance" else ""))
     return {"goal": label, "status": status, "predicted_pace": prediction["pace"], "predicted_time": prediction["time"],
             "gap_sec_km": round(gap), "longest_run_min": round(longest_run_min) if longest_run_min else None,
             "endurance_ok": endurance, "need_min": need_min, "text": text}
@@ -173,14 +200,27 @@ def compute(today: date | None = None) -> dict:
         tested = p.get("ftp_source") == "set" and p.get("ftp_updated")
         out["ftp"] = ftp_status(goals["ftp"], p.get("ftp"),
                                 date.fromisoformat(p["ftp_updated"]) if tested else None, p.get("eftp"), today)
+    from core.focus import get_focus
+    try:
+        from core.races import fetch_upcoming_races
+        races = [r for r in fetch_upcoming_races() if r.get("priority") in ("A", "B")]
+    except Exception as e:
+        logger.warning(f"Races unavailable for the goals: {e}")
+        races = []
+    out["races"] = [{"name": r["name"], "date": r["date"], "priority": r["priority"], "type": r["type"],
+                     "distance_km": r.get("distance_km")} for r in races]
     if goals.get("half_marathon"):
+        hm_race = next((r for r in races if r["type"] in RUN_TYPES and r.get("distance_km")
+                        and HM_RACE_KM[0] <= r["distance_km"] <= HM_RACE_KM[1]), None)
         env = load_env()
         c = thresholds._pace_curve(env, "90d")
         pred = hm_prediction(c.get("distance") or [], c.get("values") or [], thresholds.current().get("cs"))
         rows = query("""SELECT max(moving_time_sec) / 60.0 AS m FROM activities WHERE superseded_by IS NULL
                         AND type IN ('Run', 'TrailRun', 'VirtualRun') AND start_time >= %s;""",
                      (today - timedelta(days=LONG_RUN_DAYS),))
-        out["half_marathon"] = hm_status(goals["half_marathon"], pred, float(rows[0]["m"]) if rows and rows[0]["m"] else None)
+        out["half_marathon"] = hm_status(goals["half_marathon"], pred,
+                                         float(rows[0]["m"]) if rows and rows[0]["m"] else None,
+                                         get_focus()["mode"], hm_race, today)
     return out
 
 
@@ -217,9 +257,16 @@ def current() -> dict:
 
 
 def summary(status: dict | None = None) -> str:
+    """For the coach: the goals in priority order, after any A race."""
     st = current() if status is None else status
-    lines = [g["text"] for g in (st.get("ftp"), st.get("half_marathon")) if g]
-    return ("Goals: " + "; ".join(lines) + ".") if lines else "Goals: none set."
+    order = sorted(("ftp", "half_marathon"), key=lambda k: (load().get(k) or {}).get("priority", 9))
+    lines = [st[k]["text"] for k in order if st.get(k)]
+    if not lines:
+        return "Goals: none set."
+    races = [f"{r['priority']} race {r['name']} ({r['type']}) on {r['date']}" for r in st.get("races") or []]
+    head = ("Priorities: " + (", ".join(races) + " first (the plan builds towards it), then " if races else "")
+            + "the goals in this order")
+    return f"Goals - {head}: " + "; ".join(lines) + "."
 
 
 def markdown(status: dict | None = None) -> str:
