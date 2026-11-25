@@ -310,3 +310,12 @@ def test_red_readiness_notes_the_kept_session(week):
     today, _ = _double_day(week)
     plan = week(today=today, done=[done(today, "bike_q", flavor="vo2")], readiness={"level": "red"})
     assert "red readiness" in plan["days"][0]["sessions"][0]["note"]
+
+
+def test_pin_kind_first_sport_and_negations():
+    from core.schedule import pin_kind
+    assert pin_kind("Bike quality only: Threshold 3x10 min inside 45 min. No gym.") == "bike_q"
+    assert pin_kind("Gym - heavy legs, 16:00 or later (6+ h after the VO2max ride)") == "gym_legs"
+    assert pin_kind("Upper body gym") == "gym_upper"
+    assert pin_kind("Easy run 40 min, no bike") == "run"
+    assert pin_kind("Long ride 3 h") == "long_ride"

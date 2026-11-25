@@ -189,6 +189,12 @@ def plan_summary() -> str:
     except Exception as e:
         logger.warning(f"Thresholds / test calendar unavailable: {e}")
     try:
+        from core import energy, goals
+        lines.append(goals.summary())
+        lines.append(energy.current()["text"] + ".")
+    except Exception as e:
+        logger.warning(f"Goals / energy unavailable: {e}")
+    try:
         from core.schedule import summary as schedule_summary  # lazy: core.schedule imports this module
         lines.append("NEXT 7 DAYS (the rolling plan - the next session is its first day):\n" + schedule_summary())
     except Exception as e:

@@ -58,6 +58,11 @@ export function WeekAheadCard({ refreshKey }: { refreshKey: number }) {
                     </span>
                     {d.max_minutes && <span className="text-[10px] text-amber-300/80">max {d.max_minutes} min</span>}
                   </div>
+                  {d.fuel && !off && (
+                    <p className="mb-1.5 text-[10px] leading-snug text-amber-200/70" title={d.fuel.why}>
+                      🍝 {d.fuel.grams[0]}–{d.fuel.grams[1]} g carbs · {d.fuel.protein[0]}–{d.fuel.protein[1]} g protein
+                    </p>
+                  )}
                   {off ? (
                     <p className="text-xs text-slate-500">No training ({d.status})</p>
                   ) : d.rest ? (

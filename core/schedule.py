@@ -195,9 +195,15 @@ PIN_HARD = re.compile(r"threshold|tempo|vo2|sweet ?spot|interval|hills?\b|repeat
 PIN_LONG = re.compile(r"\blong\b", re.IGNORECASE)
 
 
+PIN_NOT = re.compile(r"\b(?:no|not|without|skip|instead of)\s+(?:the\s+|a\s+)?\w+")
+
+
 def pin_kind(text: str) -> str:
-    t = text.lower()
-    sport = next((k for pattern, k in PIN_RULES if re.search(pattern, t)), "ride")
+    """The session kind of a pinned text. The first sport named decides ("Bike quality, then
+    gym" is a ride); a negated one doesn't count ("... No gym.")."""
+    t = PIN_NOT.sub(" ", text.lower())
+    hits = [(m.start(), k) for pattern, k in PIN_RULES if (m := re.search(pattern, t))]
+    sport = min(hits, key=lambda h: h[0])[1] if hits else "ride"
     if sport is None:
         return "gym_legs" if LEG_WORDS.search(t) else "gym_upper"
     if PIN_HARD.search(t):
@@ -822,6 +828,7 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
             "status": day["status"], "max_minutes": day["max_minutes"],
             "sessions": sessions, "rest": not day["off"] and not sessions,
         })
+    _add_daily_fuel(out_days, t.get("weight"))
     return {
         "generated": datetime.now(TZ).isoformat(timespec="minutes"),
         "focus": get_focus()["mode"],
@@ -835,6 +842,24 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
         "days": out_days,
         "dropped": [{"week": m.isoformat(), "session": TITLES[k]} for m, k in dropped],
     }
+
+
+def _add_daily_fuel(out_days: list[dict], weight: float | None):
+    """Each training day gets its carbs and protein for the whole day (core/nutrition.daily_carbs)."""
+    from core import energy
+    from core.nutrition import daily_carbs, session_minutes
+    low = energy.low_energy()
+
+    def load(d):
+        return [{"sport": s["sport"], "hard": s["hard"] or s["kind"] in ("ftp_test", "run_test"),
+                 "minutes": session_minutes(s["detail"], s["kind"], d["max_minutes"], NEEDS.get(s["kind"], 45))}
+                for s in d["sessions"]]
+    for i, d in enumerate(out_days):
+        if d["status"] in availability.NO_TRAINING:
+            d["fuel"] = None
+            continue
+        nxt = load(out_days[i + 1]) if i + 1 < len(out_days) else None
+        d["fuel"] = daily_carbs(load(d), weight, nxt, low)
 
 
 def week_ahead(today: date | None = None) -> dict:
@@ -877,8 +902,11 @@ def markdown(plan: dict | None = None) -> str:
         if d["status"] in availability.NO_TRAINING:
             lines.append(f"{head} - no training ({d['status']})")
             continue
+        fuel = f"🍝 {d['fuel']['text']}" if d.get("fuel") else None
         if d["rest"]:
             lines.append(f"{head} - rest")
+            if fuel:
+                lines.append(fuel)
             continue
         limit = f" (max {d['max_minutes']} min)" if d["max_minutes"] else ""
         lines.append(f"{head}{limit}")
@@ -886,6 +914,8 @@ def markdown(plan: dict | None = None) -> str:
             tag = " 📌" if s["pinned"] else " 🔥" if s["hard"] and s["sport"] != "gym" else ""
             lines.append(f"{EMOJI[s['sport']]} {s['title']}{tag}: {s['detail']}"
                          + (f" _({s['note']})_" if s["note"] else ""))
+        if fuel:
+            lines.append(fuel)
     if plan["dropped"]:
         lines.append("_Dropped for lack of days: " + ", ".join(x["session"] for x in plan["dropped"]) + "._")
     try:

@@ -24,7 +24,14 @@ You reach the coach in three ways:
   end of a recovery week and a critical-speed run test (3 + 9 min) in the week after. Zone 2
   is anchored on the aerobic threshold (LT1) measured from chest-strap beat-to-beat data
   (DFA-alpha1), quality runs are sub-threshold, the long run grows ~10% at a time, and gym
-  weights progress from what you log (`/gym`).
+  weights progress from what you log (`/gym`). Each day also gets its carbs and protein for
+  the whole day, and a low-energy check flags weight falling while the load rises.
+- **Goals and learning**: optional measurable goals in `state/goals.json` (an FTP target by
+  a date, a half-marathon pace) with an on-track / behind signal from the numbers; every
+  adjustment the coach makes is logged with the markers around it, and a quarterly review
+  (`/review`) shows what followed and how much load you absorb. If the watch stops
+  recording something it normally does (wrist heart rate, HRV, sleep, steps), or an
+  activity has no heart rate or power, Telegram asks you to check the device.
 - **Telegram bot**: a morning briefing and check-in, a two-tap RPE/legs question after
   each hard, long or gym session (the RPE also goes to Intervals.icu), chat with memory, what-if simulations, and Strava note editing. Tell it
   "sick for 3 days", "only 40 min today" or "swap Tuesday's intervals with Thursday's
@@ -306,7 +313,8 @@ What it enables:
 2. Put its Client ID and Secret into `.env`.
 3. Run `venv/bin/python ingest/withings_auth.py` in a terminal and follow the prompts.
    This writes `state/withings_tokens.json` (see `withings_tokens.json.example`).
-4. Import: `venv/bin/python ingest/import_withings.py --days 365`
+4. Import: `venv/bin/python ingest/import_withings.py --days 365`. After that the nightly
+   plan update syncs the last 30 days by itself.
 
 If your scale already syncs weight to Intervals.icu, you can skip Withings.
 

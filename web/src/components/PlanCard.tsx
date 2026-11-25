@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { CalendarRange, Flag, FlaskConical } from "lucide-react";
+import { CalendarRange, Flag, FlaskConical, Target } from "lucide-react";
 import { api } from "../api";
-import type { FocusMode, PlanWeek, SessionKind, TrainingFocus } from "../types";
+import type { FocusMode, GoalsStatus, PlanWeek, SessionKind, TrainingFocus } from "../types";
 import { SESSION_META } from "../lib/colors";
 import { fmt, shortDate } from "../lib/format";
 import { Card, Segmented, Skeleton } from "./Card";
@@ -114,6 +114,32 @@ function WeekTile({ w, scale }: { w: PlanWeek; scale: number }) {
   );
 }
 
+const GOAL_COLOR: Record<string, string> = {
+  reached: "text-emerald-300", ahead: "text-emerald-300", on_track: "text-sky-300", behind: "text-amber-300",
+  ready: "text-emerald-300", close: "text-sky-300", building: "text-amber-300",
+};
+
+/** The athlete's goals (core/goals.py) and the low-energy flag (core/energy.py). */
+function Goals({ refreshKey }: { refreshKey: number }) {
+  const [data, setData] = useState<GoalsStatus | null>(null);
+  useEffect(() => {
+    api.goals().then(setData).catch(() => setData(null));
+  }, [refreshKey]);
+  const goals = [data?.goals.ftp, data?.goals.half_marathon].filter(Boolean);
+  if (!goals.length && data?.energy?.level !== "watch") return null;
+  return (
+    <div className="mb-3 space-y-1 rounded-xl bg-white/[0.03] p-2">
+      {goals.map((g) => (
+        <p key={g!.goal} className="flex items-start gap-1.5 text-xs text-slate-300">
+          <Target size={13} className={`mt-0.5 shrink-0 ${GOAL_COLOR[g!.status] ?? "text-slate-400"}`} />
+          <span>{g!.text}</span>
+        </p>
+      ))}
+      {data?.energy?.level === "watch" && <p className="text-xs text-amber-300">🍝 {data.energy.text}</p>}
+    </div>
+  );
+}
+
 const FOCUS_OPTIONS: { label: string; value: FocusMode }[] = [
   { label: "🚴 Cycling · FTP", value: "cycling" },
   { label: "🚴 + 🏃 Dual-sport", value: "dual" },
@@ -189,6 +215,7 @@ export function PlanCard({ refreshKey }: { refreshKey: number }) {
         </div>
       }
     >
+      <Goals refreshKey={refreshKey} />
       <FocusSwitch refreshKey={refreshKey} onChanged={() => setFocusKey((k) => k + 1)} />
       {current?.why && (
         <p className="mb-1 text-xs text-slate-300">

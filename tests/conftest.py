@@ -30,6 +30,8 @@ def _no_ftp_lookup(monkeypatch):
     monkeypatch.setattr(workouts, "_ftp_scale", lambda: 1.0)
     monkeypatch.setattr(workouts, "_weight", lambda: 70.0)
     monkeypatch.setattr(workouts, "_z2_hi", lambda: 72)
+    from core import energy
+    monkeypatch.setattr(energy, "low_energy", lambda *a, **k: False)
 
 
 @pytest.fixture(autouse=True)

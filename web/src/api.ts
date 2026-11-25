@@ -1,4 +1,4 @@
-import type { Activity, ChatMessage, ChatModel, SessionProposal, FocusMode, InjuryReport, NextSession, Overview, PlanWeek, PmcPoint, StravaNoteStatus, TrainingFocus, Usage, WeekAhead, WorkoutDay, WeekPoint, WellnessPoint } from "./types";
+import type { Activity, ChatMessage, ChatModel, SessionProposal, FocusMode, InjuryReport, NextSession, Overview, PlanWeek, PmcPoint, StravaNoteStatus, TrainingFocus, Usage, WeekAhead, WorkoutDay, WeekPoint, WellnessPoint, GoalsStatus } from "./types";
 
 /** Not logged in (core/web_auth.py): go to the login page. */
 function checkLogin(res: Response) {
@@ -27,6 +27,7 @@ export const api = {
   weekly: (weeks: number) => get<WeekPoint[]>(`/api/weekly?weeks=${weeks}`),
   plan: (weeks: number) => get<PlanWeek[]>(`/api/plan?weeks=${weeks}`),
   weekAhead: () => get<WeekAhead>("/api/week-ahead"),
+  goals: () => get<GoalsStatus>("/api/goals"),
   workouts: (day?: string) => get<WorkoutDay>(`/api/workouts${day ? `?day=${day}` : ""}`),
   workoutAction: (day: string, kind: string, action: "push" | "skip" | "remove") =>
     post<WorkoutDay>(`/api/workouts/${day}/${kind}/${action}`, {}),

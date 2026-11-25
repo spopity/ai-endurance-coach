@@ -120,6 +120,17 @@ def progress_report():
     return {"report": progress.report(), "progression": progression.context()}
 
 
+@router.get("/goals")
+def goals_status():
+    """The athlete's goals and where they stand (core/goals.py, computed nightly), plus the low-energy check."""
+    from core import energy, goals
+    try:
+        en = _cached("energy", 600, energy.current)
+    except Exception:
+        en = None
+    return {"goals": goals.current(), "energy": en}
+
+
 @router.get("/week-ahead")
 def week_ahead():
     """The rolling 7-day plan (core/schedule.py), re-derived from what was done."""

@@ -10,7 +10,11 @@ Checks:
   and 67 coach answers quietly came from the fallback),
 - the newest backup in /var/backups/ai-coach is older than 30 h, or its copy on the NAS is,
 - no Garmin health day (HRV) for the last 2 days,
-- an ai-coach systemd unit in the failed state.
+- an ai-coach systemd unit in the failed state,
+- the devices (core/devices.py): the watch stopped recording something it normally does (heart
+  rate, HRV, sleep, steps), an activity without heart rate or power, no weigh-in for 2 weeks -
+  sent as its own message asking the athlete to check the device; "back" when it records again
+  (not for a single activity: that one can't come back).
 
 The Intervals.icu API itself has its own 15-minute check (check_intervals_api.py).
 
@@ -108,6 +112,11 @@ def check_units() -> dict:
     return {f"unit:{u}": f"{u} failed - journalctl -u {u}" for u in failed}
 
 
+def check_devices() -> dict:
+    from core.devices import check
+    return check()
+
+
 def load_state() -> dict:
     try:
         with open(STATE_PATH) as f:
@@ -124,7 +133,7 @@ def main() -> int:
     env = load_env()
 
     problems = {}
-    for check in (check_services, check_backup, check_nas_copy, check_garmin, check_units):
+    for check in (check_services, check_backup, check_nas_copy, check_garmin, check_units, check_devices):
         try:
             problems.update(check())
         except Exception as e:
@@ -136,10 +145,21 @@ def main() -> int:
     fixed = [k for k in before if k not in problems]
     for k, v in problems.items():
         logger.warning(f"Problem: {v}")
-    if args.notify and new:
-        notify_telegram(env, "⚠️ AI coach health check:\n" + "\n".join(f"- {v}" for v in new.values()))
-    if args.notify and fixed:
-        notify_telegram(env, "✅ Resolved:\n" + "\n".join(f"- {before[k]}" for k in fixed))
+    device = lambda k: k.startswith(("watch:", "act:", "scale"))  # noqa: E731
+    new_sys = {k: v for k, v in new.items() if not device(k)}
+    new_dev = {k: v for k, v in new.items() if device(k)}
+    if args.notify and new_sys:
+        notify_telegram(env, "⚠️ AI coach health check:\n" + "\n".join(f"- {v}" for v in new_sys.values()))
+    if args.notify and new_dev:
+        notify_telegram(env, "Please check your devices:\n" + "\n".join(new_dev.values()))
+    fixed_sys = [k for k in fixed if not device(k)]
+    fixed_dev = [k for k in fixed if k.startswith(("watch:", "scale"))]   # a single activity can't come back
+    if args.notify and fixed_sys:
+        notify_telegram(env, "✅ Resolved:\n" + "\n".join(f"- {before[k]}" for k in fixed_sys))
+    if args.notify and fixed_dev:
+        names = {"watch:heart": "heart rate", "watch:hrv": "overnight HRV", "watch:sleep": "sleep",
+                 "watch:steps": "steps", "scale": "weigh-ins"}
+        notify_telegram(env, "✅ Recording again: " + ", ".join(names.get(k, k) for k in fixed_dev) + " - thanks!")
     if not problems:
         logger.info("All checks OK.")
     os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)

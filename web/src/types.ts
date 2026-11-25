@@ -249,6 +249,14 @@ export interface WeekSession {
   note: string | null;
 }
 
+export interface DayFuel {
+  g_per_kg: [number, number];
+  grams: [number, number];
+  protein: [number, number];
+  why: string;
+  text: string;
+}
+
 export interface WeekDay {
   date: string;
   weekday: string;
@@ -256,6 +264,18 @@ export interface WeekDay {
   max_minutes: number | null;
   sessions: WeekSession[];
   rest: boolean;
+  fuel?: DayFuel | null;
+}
+
+export interface Goal {
+  goal: string;
+  status: string;
+  text: string;
+}
+
+export interface GoalsStatus {
+  goals: { today?: string; ftp?: Goal | null; half_marathon?: Goal | null };
+  energy: { level: "ok" | "watch" | "unknown"; text: string } | null;
 }
 
 export interface WeekAhead {
