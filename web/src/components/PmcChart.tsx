@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { TrendingUp } from "lucide-react";
-import type { EChartsOption } from "echarts";
+import type { ECharts, EChartsOption } from "echarts";
 import { api } from "../api";
 import type { PmcPoint } from "../types";
 import { C, chartBase } from "../lib/colors";
@@ -14,6 +14,17 @@ const RANGES = [
   { label: "3y", value: 1095 },
   { label: "All", value: 6000 },
 ];
+
+const INTERVALS_ACTIVITY = "https://intervals.icu/activities/";
+
+/** The activity behind a day: the day's biggest load, or on a rest day the last one before it. */
+export function activityFor(data: PmcPoint[], index: number) {
+  for (let i = Math.min(index, data.length - 1); i >= 0; i--) {
+    const a = data[i].activities;
+    if (a && a.length) return a[0];
+  }
+  return null;
+}
 
 // Form (TSB) zones, as on Intervals.icu.
 const ZONES: [number, number, string][] = [
@@ -31,6 +42,24 @@ export function PmcChart({ refreshKey, compact = false }: { refreshKey: number; 
   useEffect(() => {
     api.pmc(days).then(setData).catch(() => setData([]));
   }, [days, refreshKey]);
+
+  // A click anywhere in a day's column (not only on the line) opens that day's activity.
+  const dataRef = useRef<PmcPoint[] | null>(null);
+  dataRef.current = data;
+  const onReady = useCallback((chart: ECharts) => {
+    const zr = chart.getZr();
+    const at = (x: number, y: number) => {
+      const rows = dataRef.current;
+      if (!rows?.length || !chart.containPixel({ gridIndex: [0, 1] }, [x, y])) return null;
+      const i = chart.convertFromPixel({ xAxisIndex: 0 }, [x, y]) as unknown as number[] | number;
+      return activityFor(rows, Math.round(Array.isArray(i) ? i[0] : i));
+    };
+    zr.on("mousemove", (e) => zr.setCursorStyle(at(e.offsetX, e.offsetY) ? "pointer" : "default"));
+    zr.on("click", (e) => {
+      const a = at(e.offsetX, e.offsetY);
+      if (a) window.open(INTERVALS_ACTIVITY + a.id, "_blank", "noopener");
+    });
+  }, []);
 
   const days_ = data?.map((d) => d.day) ?? [];
   const option: EChartsOption = {
@@ -93,7 +122,7 @@ export function PmcChart({ refreshKey, compact = false }: { refreshKey: number; 
       icon={<TrendingUp size={15} className="text-sky-400" />}
       action={<Segmented options={RANGES} value={days} onChange={setDays} />}
     >
-      {data ? <Chart option={option} height={compact ? 300 : 360} /> : <Skeleton className="h-[300px] lg:h-[360px]" />}
+      {data ? <Chart option={option} height={compact ? 300 : 360} onReady={onReady} /> : <Skeleton className="h-[300px] lg:h-[360px]" />}
       <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
         <span><i className="mr-1 inline-block h-2 w-2 rounded-sm bg-sky-400/50" />Fresh +5…+25</span>
         <span><i className="mr-1 inline-block h-2 w-2 rounded-sm bg-neutral-400/40" />Grey zone −10…+5</span>

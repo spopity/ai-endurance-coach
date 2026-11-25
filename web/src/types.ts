@@ -74,6 +74,8 @@ export interface PmcPoint {
   atl: number;
   tsb: number;
   load: number;
+  /** That day's activities, biggest load first (absent in the demo). */
+  activities?: { id: string; name: string; type: string; load: number | null }[];
 }
 
 /** The model the chat answers with (Coach, Twin, Racing, History). */

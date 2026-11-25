@@ -25,7 +25,7 @@ from core.readiness import current_readiness
 from core.focus import MODES as FOCUS_MODES, get_focus, set_focus
 from core.injury_checks import run_injury_checks
 from core.plan import upcoming_plan
-from core.schedule import build as build_schedule
+from core.schedule import TZ as SCHEDULE_TZ, build as build_schedule
 from core import strava, workouts
 from core.strava_notes import build_note, load_activity, publish_note, require_write_scope, strava_url
 from core.races import fetch_upcoming_races
@@ -51,13 +51,21 @@ def pmc(days: int = 180):
     days = max(14, min(days, 6000))
     since = date.today() - timedelta(days=days)
     rows = _query("SELECT day, ctl, atl FROM daily_metrics WHERE day >= %s AND ctl IS NOT NULL ORDER BY day;", (since,))
-    loads = _query("""
-        SELECT start_time::date AS day, SUM(training_load) AS load FROM activities
-        WHERE superseded_by IS NULL AND start_time::date >= %s GROUP BY 1;
-    """, (since,))
-    load_by_day = {r["day"]: float(r["load"] or 0) for r in loads}
+    # The athlete's local day (not UTC), so a late-evening session counts on the day it was done.
+    acts = _query("""
+        SELECT (start_time AT TIME ZONE %s)::date AS day, external_id, name, type, training_load FROM activities
+        WHERE superseded_by IS NULL AND (start_time AT TIME ZONE %s)::date >= %s ORDER BY start_time;
+    """, (str(SCHEDULE_TZ), str(SCHEDULE_TZ), since))
+    load_by_day: dict = defaultdict(float)
+    acts_by_day: dict = defaultdict(list)
+    for a in acts:
+        load_by_day[a["day"]] += float(a["training_load"] or 0)
+        acts_by_day[a["day"]].append({"id": a["external_id"], "name": a["name"], "type": a["type"],
+                                      "load": _f(a["training_load"], 0)})
+    # Clicking a day on the chart opens its activities, the biggest load first.
     return [{"day": r["day"].isoformat(), "ctl": _f(r["ctl"]), "atl": _f(r["atl"]),
-             "tsb": _f(float(r["ctl"]) - float(r["atl"])), "load": _f(load_by_day.get(r["day"], 0), 0)}
+             "tsb": _f(float(r["ctl"]) - float(r["atl"])), "load": _f(load_by_day.get(r["day"], 0), 0),
+             "activities": sorted(acts_by_day.get(r["day"], []), key=lambda a: -(a["load"] or 0))}
             for r in rows]
 
 

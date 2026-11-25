@@ -11,7 +11,7 @@ import {
   TooltipComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import type { EChartsOption } from "echarts";
+import type { ECharts, EChartsOption } from "echarts";
 
 echarts.use([
   BarChart,
@@ -27,7 +27,12 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-export function Chart({ option, height = 280 }: { option: EChartsOption; height?: number }) {
+export function Chart({ option, height = 280, onReady }: {
+  option: EChartsOption;
+  height?: number;
+  /** Gets the chart instance, e.g. to listen to clicks anywhere on the plot. */
+  onReady?: (chart: ECharts) => void;
+}) {
   return (
     <ReactEChartsCore
       echarts={echarts}
@@ -36,6 +41,7 @@ export function Chart({ option, height = 280 }: { option: EChartsOption; height?
       lazyUpdate
       style={{ height, width: "100%" }}
       opts={{ renderer: "canvas" }}
+      onChartReady={onReady}
     />
   );
 }
