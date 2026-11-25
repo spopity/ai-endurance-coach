@@ -32,6 +32,15 @@ def _no_ftp_lookup(monkeypatch):
     monkeypatch.setattr(workouts, "_z2_hi", lambda: 72)
 
 
+@pytest.fixture(autouse=True)
+def today_plan(monkeypatch):
+    """Today's kept plan (state/plan_today.json) in memory: {date: [kinds]}."""
+    store = {}
+    monkeypatch.setattr(schedule, "_load_today_plan", lambda d: store.get(d))
+    monkeypatch.setattr(schedule, "_save_today_plan", lambda d, sessions: store.__setitem__(d, list(sessions)))
+    return store
+
+
 @pytest.fixture
 def week(monkeypatch):
     """Configures the schedule's inputs; returns a function (today, done, entries, mix, phase,

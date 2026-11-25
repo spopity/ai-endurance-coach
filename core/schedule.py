@@ -10,7 +10,8 @@ isn't next to another hard day; a hard ride cut short still counts when it reach
 quality threshold (core/plan.classify) and otherwise stays to do; when the days run out, the
 filler goes first (an easy ride, then an easy run, then the third gym session) and the key
 sessions stay (bike quality, run quality, long ride, long run). Nothing is ever doubled up to
-"make up" a missed session. A session pushed to Intervals.icu (core/workouts.py) and done with
+"make up" a missed session. Once a session of today is done, today keeps the rest of its morning
+plan (state/plan_today.json): the second session of a double day is not re-planned. A session pushed to Intervals.icu (core/workouts.py) and done with
 >= 80% compliance counts as that session, whatever the zone times say.
 
 Rules for the layout (the dual-sport week in core/focus.py):
@@ -30,7 +31,9 @@ recovery week, the CS test as the first quality run after it.
 The head coach's next session is day 1 of this plan (agents/ai_coach.py rule 19).
 """
 import itertools
+import json
 import logging
+import os
 import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -635,6 +638,63 @@ def _today() -> date:
     return datetime.now(TZ).date()
 
 
+# --- today's plan, kept once training has started ---
+# Before anything is done today, today is laid out like any other day and the result is kept in
+# TODAY_FILE. Once a session of today is done, today is no longer re-laid out: the sessions kept
+# for today that aren't done yet stay on today (the gym after the VO2max), and the rest of the
+# week is planned around them. Fallback when the file is missing: the workouts of today in
+# state/workouts (what was on the dashboard/Intervals).
+TODAY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state", "plan_today.json")
+
+
+def _load_today_plan(today: date) -> list[str] | None:
+    try:
+        with open(TODAY_FILE) as f:
+            snap = json.load(f)
+        if snap.get("date") == today.isoformat():
+            return [k for k in snap.get("sessions", []) if k in SPORT]
+    except (OSError, ValueError):
+        pass
+    try:
+        from core import workouts
+        stored = workouts._load(today)["workouts"]
+        kept = [k for k, w in stored.items() if k in SPORT and w.get("status") != "skipped"]
+        return kept or None
+    except Exception:
+        return None
+
+
+def _save_today_plan(today: date, sessions: list[str]):
+    try:
+        with open(TODAY_FILE) as f:
+            if json.load(f) == {"date": today.isoformat(), "sessions": sessions}:
+                return
+    except (OSError, ValueError):
+        pass
+    try:
+        tmp = TODAY_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"date": today.isoformat(), "sessions": sessions}, f)
+        os.replace(tmp, TODAY_FILE)
+    except OSError as e:
+        logger.warning(f"Could not keep today's plan: {e}")
+
+
+def _still_today(planned: list[str], done_today: list[dict]) -> list[str]:
+    """The sessions planned for today that aren't done yet. A done session takes the planned one
+    of its sport (an easy ride instead of the VO2max still counts as today's ride); after any
+    endurance session no second one is kept (one a day), the gym stays."""
+    left = list(planned)
+    for d in done_today:
+        sport = SPORT.get(d["kind"])
+        hit = d["kind"] if d["kind"] in left else next((k for k in left if SPORT[k] == sport), None)
+        if hit:
+            left.remove(hit)
+    if any(d["kind"] in ENDURANCE for d in done_today):
+        left = [k for k in left if SPORT[k] == "gym"]
+    return left
+
+
 def build(today: date | None = None, readiness: dict | None = None) -> dict:
     """The next 7 days. `readiness` (core/readiness) shapes day 1; fetched when not given."""
     today = today or _today()
@@ -653,7 +713,16 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
     done_week = _done(this_monday, today)
     done_today = [d for d in done_week if d["day"] == today]
     trained_today = any(d["kind"] in ENDURANCE for d in done_today)
-    start = today + timedelta(days=1) if trained_today else today
+    # Training has started today: today keeps what was planned for it and isn't re-laid out.
+    planned_today = _load_today_plan(today) if done_today else None
+    keep_today = _still_today(planned_today, done_today) if planned_today is not None else None
+    if keep_today is not None and availability.day_status(today, avail) and \
+            availability.day_status(today, avail)["kind"] in availability.NO_TRAINING:
+        keep_today = None
+    if keep_today is not None:
+        start = today
+    else:
+        start = today + timedelta(days=1) if trained_today else today
     # The last week in the window is laid out in full, so its long sessions still find the weekend;
     # only the first DAYS days are shown.
     last = start + timedelta(days=DAYS - 1)
@@ -662,6 +731,13 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
     hard_before = {d["day"] for d in done_week if d["kind"] in HARD and d["day"] >= yesterday}
     if trained_today and any(d["kind"] in HARD for d in done_today):
         hard_before.add(today)
+    frozen = None
+    if keep_today is not None:
+        # Today is fixed: off for the layout (nothing new goes on it), its sessions count for the week.
+        frozen = days[0]
+        frozen.update(sessions=list(keep_today), off=True, frozen=True)
+        if any(d["kind"] in HARD for d in done_today) or any(k in HARD for k in keep_today):
+            hard_before.add(today)
     first = next((d for d in days if not d["off"]), None)
     no_hard = {first["date"]} if first and level == "red" else set()
     if first and level == "red" and not first["pin"]:
@@ -671,7 +747,7 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
 
     # Pinned sessions take their day first (and a pinned hard one counts for the spacing).
     for day in days:
-        if day["pin"] and not day["off"]:
+        if day["pin"] and not day["off"] and not day.get("frozen"):
             day["sessions"].append(pin_kind(day["pin"]))
             if day["sessions"][-1] in HARD:
                 hard_before.add(day["date"])
@@ -709,6 +785,10 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
         hard_before |= {d["date"] for d in seg if any(s in HARD for s in d["sessions"])}
         info["monday"] = monday
         weeks.append(info)
+    if frozen:
+        frozen["off"] = False
+    elif days and days[0]["date"] == today and not done_today:
+        _save_today_plan(today, list(days[0]["sessions"]))
 
     out_days, seen = [], set()
     for day in days[:DAYS]:
@@ -730,6 +810,10 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
                 note = "amber readiness: trim it ~20% and start with the warm-up test"
             if day is first and level == "red" and not pinned:
                 note = "red readiness: keep it easy and short, or rest"
+            if day is frozen and level == "red":
+                note = "red readiness: keep it easy and short, or rest"
+            elif day is frozen and level == "amber" and k in HARD:
+                note = "amber readiness: keep it ~20% lighter"
             title = "Gym - light full body" if k == "gym_legs" and info.get("deload") else TITLES[k]
             sessions.append({"kind": k, "sport": SPORT[k], "title": title, "detail": detail,
                              "hard": k in HARD, "key": k in KEY_WEIGHT, "pinned": pinned, "note": note})

@@ -260,3 +260,53 @@ def test_long_run_detail_uses_the_progression(week):
     plan = week(longest_run_min=70)
     lr = next(s for d in plan["days"] for s in d["sessions"] if s["kind"] == "long_run")
     assert lr["detail"].startswith("75-80 min")
+
+
+# --- two sessions on one day: the first one done doesn't rewrite the day ---
+
+def _double_day(week):
+    """A morning plan of the week with a bike quality + heavy legs day; returns (that day, plan)."""
+    for i in range(7):
+        today = MONDAY + timedelta(days=i)
+        plan = week(today=today)
+        if set(kinds(plan)[0]) == {"bike_q", "gym_legs"}:
+            return today, plan
+    raise AssertionError("no bike quality + heavy legs day in the plan")
+
+
+def test_second_session_stays_after_the_first_is_done(week, today_plan):
+    today, _ = _double_day(week)
+    assert sorted(today_plan[today]) == ["bike_q", "gym_legs"]   # kept from the morning build
+    plan = week(today=today, done=[done(today, "bike_q", flavor="vo2")])
+    assert plan["days"][0]["date"] == today.isoformat()
+    assert kinds(plan)[0] == ["gym_legs"]
+    week_kinds = [k for d in plan["days"] if date.fromisoformat(d["date"]) < MONDAY + timedelta(days=7)
+                  for k in (s["kind"] for s in d["sessions"])]
+    assert week_kinds.count("gym_legs") == 1                       # not planned again later
+    assert not any(s in HARD for s in kinds(plan)[1])                # today still counts as hard
+
+
+def test_other_session_done_instead_keeps_the_gym(week):
+    today, _ = _double_day(week)
+    plan = week(today=today, done=[done(today, "ride")])
+    assert kinds(plan)[0] == ["gym_legs"]                            # no second endurance session today
+
+
+def test_gym_done_first_keeps_the_ride(week):
+    today, _ = _double_day(week)
+    plan = week(today=today, done=[done(today, "gym_legs", name="Legs")])
+    assert kinds(plan)[0] == ["bike_q"]
+
+
+def test_nothing_new_goes_on_today(week, today_plan):
+    today = MONDAY + timedelta(days=2)
+    today_plan[today] = ["ride"]
+    plan = week(today=today, done=[done(today, "ride")])
+    assert plan["days"][0]["date"] == today.isoformat()
+    assert kinds(plan)[0] == [] and plan["days"][0]["rest"]
+
+
+def test_red_readiness_notes_the_kept_session(week):
+    today, _ = _double_day(week)
+    plan = week(today=today, done=[done(today, "bike_q", flavor="vo2")], readiness={"level": "red"})
+    assert "red readiness" in plan["days"][0]["sessions"][0]["note"]
