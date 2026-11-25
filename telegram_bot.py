@@ -61,37 +61,55 @@ LOCAL_TZ = ZoneInfo("Europe/Bratislava")
 DEFAULT_BRIEFING_TIME = "07:00"
 BRIEFING_SYNC_DAYS = 3
 
-HELP_TEXT = (
-    "Ask me anything about your training - I'll route it to the right specialist.\n\n"
-    f"I remember the last {MAX_HISTORY_MESSAGES // 2} exchanges, so follow-ups like \"and tomorrow?\" work. "
-    f"The thread resets after {CONVERSATION_IDLE_SECONDS // 3600}h of silence.\n\n"
-    "/twin <scenario> - send a what-if straight to the Athlete Twin (projections, climb times, tapers)\n"
-    "Coach, Twin, Racing and History answer with Claude (your subscription). Gemini steps in if Claude fails.\n"
-    "/gemini - answer with Gemini instead; /claude switches back. Both can save next-session changes and availability\n"
-    "/local - toggle Local only: answer with the local model on the home GPU\n"
-    "/strava [YYYY-MM-DD] [context] - (re)write the coach note on a Strava activity (latest activity by default), "
-    "previewed before posting\n"
-    "/briefing - today's briefing now (it also arrives every morning)\n"
-    "/week - the next 7 days of training; it re-plans itself after every sync (a missed session moves, "
-    "the filler drops)\n"
-    "/progress - am I getting faster? Performance markers per 4 weeks, the verdict, and the level of each "
-    "quality session type, and where your goals stand\n"
-    "/review - the quarterly review: what the coach changed and what followed, the load you absorb\n"
-    "To change your next session, agree it with the coach and say \"update my plan\" - "
-    "nothing changes until you tap Apply.\n"
-    "Tell me when you can't train (\"sick for 3 days\", \"away until Sunday\", \"only 40 min today\") - "
-    "I save the exact dates and plan around them; normal training resumes by itself afterwards. "
-    "Moving or swapping sessions between days works the same way (\"long ride Thursday instead of Tuesday\").\n"
-    "After each hard or long ride or run and each gym session I ask for RPE and how your legs feel (the RPE also "
-    "goes to Intervals.icu); easy sessions are covered by the quick morning check-in.\n"
-    "/workout [YYYY-MM-DD] - today's workouts as structured files; Push puts one on your Intervals.icu "
-    "calendar (it syncs on to Garmin/Zwift from there). They also arrive every morning after the briefing\n"
-    "/gym squat 80x5x3, rdl 60x8x3 - log the main lifts (kg x reps x sets, bw = bodyweight); the plan "
-    "progresses the weights from them\n"
-    "/reset - start a fresh conversation\n"
-    "/sync - pull the latest activities + wellness from Intervals.icu\n"
-    "/help - show this message"
-)
+# Every command, once: /help and the Telegram "/" menu are both built from this list.
+# (group, command, usage after the command, menu text, help text)
+COMMANDS = [
+    ("📅 Plan and training", "week", "", "The next 7 days of training",
+     "the next 7 days with targets and daily carbs; re-plans itself after every sync"),
+    ("📅 Plan and training", "workout", "[YYYY-MM-DD]", "Today's workouts - push to Intervals.icu",
+     "the day's workouts as structured steps; Push puts one on your Intervals.icu calendar (on to Garmin/Zwift)"),
+    ("📅 Plan and training", "briefing", "", "Today's briefing now",
+     "today's briefing now (it also arrives every morning)"),
+    ("📅 Plan and training", "gym", "squat 80x5x3, rdl 60x8x3", "Log lifts: squat 80x5x3, rdl 60x8x3",
+     "log the main lifts (kg x reps x sets, bw = bodyweight); the plan progresses the weights from them"),
+    ("📈 Progress and goals", "progress", "", "Am I getting faster? Markers, verdict, goals, levels",
+     "am I getting faster? Markers per 4 weeks, the verdict, your goals, the level of each session type"),
+    ("📈 Progress and goals", "review", "", "Quarterly review: what worked, load you absorb",
+     "the quarterly review: what the coach changed and what followed, the load you absorb"),
+    ("🤖 Ask the coach", "twin", "<scenario>", "Ask the Athlete Twin a what-if directly",
+     "a what-if straight to the Athlete Twin (projections, climb times, tapers)"),
+    ("🤖 Ask the coach", "claude", "", "Answer with Claude (default)", "answer with Claude (the default)"),
+    ("🤖 Ask the coach", "gemini", "", "Answer with Gemini (can save changes)",
+     "answer with Gemini instead (/claude switches back)"),
+    ("🤖 Ask the coach", "local", "", "Toggle Local only (home GPU)",
+     "toggle Local only: answer with the local model on the home GPU"),
+    ("🤖 Ask the coach", "reset", "", "Start a fresh conversation", "start a fresh conversation"),
+    ("🔄 Data", "sync", "", "Pull latest activities + wellness",
+     "pull the latest activities and wellness from Intervals.icu"),
+    ("🔄 Data", "strava", "[YYYY-MM-DD] [context]", "(Re)write the coach note on a Strava activity",
+     "(re)write the coach note on a Strava activity (the latest by default), previewed before posting"),
+    ("ℹ️ Help", "help", "", "All commands", "this list"),
+]
+
+
+def help_text() -> str:
+    lines, group = ["**All commands**"], None
+    for g, cmd, usage, _, text in COMMANDS:
+        if g != group:
+            lines.append(f"\n**{g}**")
+            group = g
+        lines.append(f"/{cmd}" + (f" `{usage}`" if usage else "") + f" - {text}")
+    lines += [
+        "\n**Without a command**",
+        "Just ask anything about your training - it goes to the right specialist. "
+        f"I remember the last {MAX_HISTORY_MESSAGES // 2} exchanges; the thread resets after "
+        f"{CONVERSATION_IDLE_SECONDS // 3600}h of silence.",
+        "Can't train? \"sick for 3 days\", \"away until Sunday\", \"only 40 min today\", "
+        "\"long ride Thursday instead of Tuesday\" - the plan works around those dates.",
+        "To change your next session, agree it with the coach and say \"update my plan\" "
+        "(nothing changes until you tap Apply).",
+    ]
+    return "\n".join(lines)
 
 
 async def send_markdown_to(bot, chat_id: int, text: str):
@@ -150,7 +168,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(HELP_TEXT)
+    await send_markdown_to(context.bot, update.effective_chat.id, help_text())
 
 
 async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -732,22 +750,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application: Application):
-    await application.bot.set_my_commands([
-        BotCommand("week", "The next 7 days of training"),
-        BotCommand("progress", "Am I getting faster? Markers, verdict, goals, levels"),
-        BotCommand("review", "Quarterly review: what worked, load you absorb"),
-        BotCommand("briefing", "Today's briefing now"),
-        BotCommand("workout", "Today's workouts - push to Intervals.icu"),
-        BotCommand("gym", "Log lifts: squat 80x5x3, rdl 60x8x3"),
-        BotCommand("twin", "Ask the Athlete Twin a what-if directly"),
-        BotCommand("local", "Toggle Local only (home GPU instead of Gemini)"),
-        BotCommand("claude", "Answer with Claude (default)"),
-        BotCommand("gemini", "Answer with Gemini (can save changes)"),
-        BotCommand("strava", "(Re)write the coach note on a Strava activity"),
-        BotCommand("reset", "Start a fresh conversation"),
-        BotCommand("sync", "Pull latest activities + wellness"),
-        BotCommand("help", "What can I ask?"),
-    ])
+    await application.bot.set_my_commands([BotCommand(c, menu) for _, c, _, menu, _ in COMMANDS])
     me = await application.bot.get_me()
     logger.info(f"Telegram bot @{me.username} is up (long polling).")
 
