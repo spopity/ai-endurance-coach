@@ -28,7 +28,7 @@ from telegram.ext import (
 from core.briefing import build_briefing
 from core.api_log import trigger
 from core.claude_agent import FALLBACK_NOTE, configured as claude_configured
-from core.chat import AGENT_DISPLAY_NAMES, CLAUDE_AGENT_NODES, SYNC_WINDOW_DAYS, ask_supervisor, new_turn_id, run_sync, turn_proposal
+from core.chat import AGENT_DISPLAY_NAMES, ALWAYS_CLAUDE_NODES, CLAUDE_AGENT_NODES, SYNC_WINDOW_DAYS, ask_supervisor, new_turn_id, run_sync, turn_proposal
 from core.history import MAX_HISTORY_MESSAGES
 from core.schedule import build as build_schedule, markdown as schedule_markdown
 from core.telegram_format import md_to_telegram_html, split_message
@@ -87,6 +87,9 @@ COMMANDS = [
      "the quarterly review: what the coach changed and what followed, the load you absorb"),
     ("🤖 Ask the coach", "twin", "<scenario>", "Ask the Athlete Twin a what-if directly",
      "a what-if straight to the Athlete Twin (projections, climb times, tapers)"),
+    ("🤖 Ask the coach", "kom", "<question>", "Ask the KOM agent (segments, KOMs)",
+     "a question straight to the KOM agent: your KOMs, gained/lost, gap to the KOM on a segment, targets "
+     "(always Claude; questions mentioning KOM or segment go there anyway)"),
     ("🤖 Ask the coach", "claude", "", "Answer with Claude (default)", "answer with Claude (the default)"),
     ("🤖 Ask the coach", "gemini", "", "Answer with Gemini (can save changes)",
      "answer with Gemini instead (/claude switches back)"),
@@ -212,7 +215,8 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, 
         logger.info(f"Agent '{agent}' replied ({len(reply)} chars, {len(history)} prior messages); sending to Telegram.")
         if reply:
             remember_turn(context.chat_data, text, agent, reply)
-        mode = (" · local" if local_only else "" if not use_claude or agent not in CLAUDE_AGENT_NODES
+        mode = (" · claude" if agent in ALWAYS_CLAUDE_NODES
+                else " · local" if local_only else "" if not use_claude or agent not in CLAUDE_AGENT_NODES
                 else " · gemini (fallback)" if reply.startswith(FALLBACK_NOTE) else " · claude")
         header = f"*→ {AGENT_DISPLAY_NAMES.get(agent, agent)}*{mode}\n\n"
         await send_markdown(update, header + (reply or "(The agent returned an empty reply.)"))
@@ -245,6 +249,20 @@ async def cmd_twin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     logger.info(f"Received Telegram /twin request: {text!r}")
     await answer(update, context, text, forced_agent="athlete_twin")
+
+
+async def cmd_kom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args).strip()
+    if not text:
+        await update.effective_message.reply_text(
+            "Usage: /kom <question>\n\nExamples:\n"
+            "/kom how many KOMs do I have?\n"
+            "/kom how far am I from the KOM on Húšť?\n"
+            "/kom which KOMs are within 10% of my best?"
+        )
+        return
+    logger.info(f"Received Telegram /kom request: {text!r}")
+    await answer(update, context, text, forced_agent="kom")
 
 
 async def cmd_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -889,6 +907,7 @@ def main():
 
     application.add_handler(CommandHandler(["start", "help"], cmd_help, filters=allowed))
     application.add_handler(CommandHandler("twin", cmd_twin, filters=allowed))
+    application.add_handler(CommandHandler("kom", cmd_kom, filters=allowed))
     application.add_handler(CommandHandler("local", cmd_local, filters=allowed))
     application.add_handler(CommandHandler("claude", cmd_claude, filters=allowed))
     application.add_handler(CommandHandler("gemini", cmd_gemini, filters=allowed))

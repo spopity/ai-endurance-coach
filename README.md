@@ -102,6 +102,12 @@ proposals, availability, pinned sessions, push experiments) and nothing else: Cl
 tools stay off. If a Claude call fails, Gemini answers instead and says so; without a token
 everything uses Gemini.
 
+Optionally, questions about **Strava segments and KOMs** go to a separate KOM agent: its own service
+(not part of this repository) that the chat reaches at `KOM_URL` with the shared `KOM_API_TOKEN`.
+Questions that mention a KOM, QOM, Local Legend or segment are routed there directly, and Telegram
+`/kom <question>` and the dashboard's agent picker reach it too. Without `KOM_API_TOKEN` the chat says
+the KOM agent isn't set up.
+
 **Push experiments:** tell the coach you can do more and it may go above the plan for up to two
 weeks, without changing the plan. The ceiling comes from a safe fitness ramp and from what you did
 at this fitness in your best years (set `BENCHMARK_YEARS` in `core/push.py` and
@@ -207,6 +213,7 @@ Optional settings (commented out in `.env.example`):
 | `HOME_LOCATION` | built-in default | Town used for race weather when a race has no location, e.g. `Girona, Spain` |
 | `BRIEFING_TIME` | `07:00` | Daily Telegram briefing time, in the app's timezone (§7.1) |
 | `LIFE_AGENT_ENABLED` | `false` | Enables the Google Calendar agent (§4.4) |
+| `KOM_URL` / `KOM_API_TOKEN` | `http://127.0.0.1:8010` / unset | The optional separate KOM agent service and the token it checks |
 
 ### 3.3 Create the database
 

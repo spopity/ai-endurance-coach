@@ -23,6 +23,7 @@ from agents.injury import call_injury
 from agents.life import run_life_agent
 from agents.racing import call_racing
 from agents.history import call_history, call_history_local
+from agents.kom import KOM_WORDS, call_kom
 from agents.local import call_coach_local, call_racing_local, call_twin_local
 
 env = load_env()
@@ -34,7 +35,7 @@ logger = logging.getLogger("AI_COACH_V1.graph")
 # the graph itself. Re-enable with LIFE_AGENT_ENABLED=true in the env.
 LIFE_AGENT_ENABLED = str(env.get("LIFE_AGENT_ENABLED", "false")).lower() in ("1", "true", "yes")
 
-AGENT_NAMES = ["racing_strategy", "injury_prevention", "athlete_twin", "history_analyst", "ai_coach"]
+AGENT_NAMES = ["racing_strategy", "injury_prevention", "athlete_twin", "history_analyst", "kom", "ai_coach"]
 if LIFE_AGENT_ENABLED:
     AGENT_NAMES.insert(0, "life_optimization")
 
@@ -110,6 +111,9 @@ Route the user's query to the single most appropriate specialist agent:
   question that starts from real numbers but imagines a scenario that isn't a real planned event.
   Also ALL projections of future fitness/fatigue/form (CTL/ATL/TSB) under a hypothetical load or plan -
   e.g. "where will my CTL be after 4 weeks at 350 TSS/week?", "what happens to my form if I rest 5 days?".
+- kom: Strava SEGMENTS and KOMs - KOMs/QOMs/CRs held, gained or lost, Local Legends, times and attempts on a
+  named segment, the gap to a KOM, which KOMs are within reach, planning or pacing a KOM attempt, segment watch list -
+  e.g. "how many KOMs do I have?", "how far am I from the KOM on Húšť?", "what do I need for the KOM on X?".
 - ai_coach: the primary coach - general training advice, workout suggestions, and analysis of past
   activities. Default here for anything about a specific past workout. Also ALL requests to save, update, change or
   swap the planned next session ("update my plan", "make that my next session"), and moving or swapping
@@ -142,6 +146,9 @@ def supervisor_node(state: AgentState):
             logger.info(f"Supervisor bypassed - agent forced to '{forced}' for query: {user_input!r}")
             return {"next_agent": forced}
         logger.warning(f"Ignoring forced agent '{forced}' (disabled/unknown); routing normally.")
+    if KOM_WORDS.search(str(user_input)):
+        logger.info(f"Supervisor routed to 'kom' by keyword for query: {user_input!r}")
+        return {"next_agent": "kom"}
     logger.info(f"Supervisor routing query: {user_input!r} ({len(prior)} prior messages)")
     try:
         prompt = SUPERVISOR_PROMPT.format(
@@ -194,6 +201,7 @@ workflow.add_node("injury_prevention", log_agent_call("Injury Prevention", call_
 if LIFE_AGENT_ENABLED:
     workflow.add_node("life_optimization", log_agent_call("Life Optimization", call_life_wrapper))
 workflow.add_node("athlete_twin", log_agent_call("Athlete Twin", local_or_cloud(call_twin_local, call_twin)))
+workflow.add_node("kom", log_agent_call("KOM", call_kom))  # always Claude, in /opt/kom
 workflow.add_node("history_analyst", log_agent_call("History Analyst", local_or_cloud(call_history_local, call_history)))
 
 workflow.set_entry_point("preprocessor")

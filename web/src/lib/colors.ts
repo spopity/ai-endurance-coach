@@ -41,6 +41,7 @@ export const AGENT_META: Record<string, { label: string; color: string }> = {
   racing_strategy: { label: "Racing Strategy", color: "#fb923c" },
   injury_prevention: { label: "Injury & Recovery", color: "#34d399" },
   life_optimization: { label: "Life Optimization", color: "#f472b6" },
+  kom: { label: "KOM Agent", color: "#fbbf24" },
   error: { label: "Error", color: "#f87171" },
 };
 
@@ -48,6 +49,7 @@ export const AGENT_META: Record<string, { label: string; color: string }> = {
 export const SERVICE_META: Record<string, { label: string; color: string }> = {
   gemini: { label: "Gemini", color: "#a78bfa" },
   claude: { label: "Claude", color: "#fb923c" },
+  kom: { label: "KOM agent", color: "#fbbf24" },
   ollama: { label: "Ollama (local)", color: "#34d399" },
   intervals: { label: "Intervals.icu", color: "#38bdf8" },
   strava: { label: "Strava", color: "#fb923c" },

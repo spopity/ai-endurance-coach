@@ -33,6 +33,7 @@ AGENT_DISPLAY_NAMES = {
     "life_optimization": "Life Optimization Agent",
     "athlete_twin": "Athlete Twin",
     "history_analyst": "History Analyst",
+    "kom": "KOM Agent",
 }
 
 
@@ -149,6 +150,8 @@ async def run_sync(days: int = SYNC_WINDOW_DAYS) -> str:
 FINAL_AGENT_NODES = set(AGENT_DISPLAY_NAMES) - {"supervisor"}
 # The agents that answer with Claude when use_claude is set (the rest stay on the local model).
 CLAUDE_AGENT_NODES = {"ai_coach", "athlete_twin", "racing_strategy", "history_analyst"}
+# Answers with Claude whatever the chat's model choice (/gemini, /local): the KOM agent in /opt/kom.
+ALWAYS_CLAUDE_NODES = {"kom"}
 
 
 async def stream_reply(message: str, history: list[dict] | None = None, agent: str | None = None,
@@ -171,7 +174,7 @@ async def stream_reply(message: str, history: list[dict] | None = None, agent: s
             if kind == "on_chain_start" and name in AGENT_DISPLAY_NAMES and name not in started:
                 started.add(name)
                 yield {"type": "status", "content": f"Engaging {AGENT_DISPLAY_NAMES[name]}..."}
-                if claude and name in CLAUDE_AGENT_NODES:
+                if (claude and name in CLAUDE_AGENT_NODES) or name in ALWAYS_CLAUDE_NODES:
                     yield {"type": "status", "content": "Engaging Claude..."}
 
             elif kind == "on_chat_model_start":
@@ -197,7 +200,8 @@ async def stream_reply(message: str, history: list[dict] | None = None, agent: s
                 if output.get("messages"):
                     text = extract_text(output["messages"][-1].content)
                     logger.info(f"Final reply from '{name}' ({len(text)} chars).")
-                    model = ("gemini" if "gemini" in models else "local" if models
+                    model = ("claude" if name in ALWAYS_CLAUDE_NODES
+                             else "gemini" if "gemini" in models else "local" if models
                              else "claude" if claude and name in CLAUDE_AGENT_NODES else "none")
                     yield {"type": "final", "agent": name, "model": model, "content": text}
                     break

@@ -165,10 +165,15 @@ Every chat message goes through a LangGraph pipeline:
      `coach_reader` role. No local-only version.
    - `athlete_twin`: what-ifs, CTL/ATL projections, climb times, playful
      extrapolations.
+   - `kom`: Strava segments and KOMs (held, gained/lost, gap to the KOM, targets, attempts).
+     A separate project, `/opt/kom` (its own service on 127.0.0.1:8010, its own SQLite
+     database and Strava sync, always Claude); `agents/kom.py` only forwards the question and
+     the recent conversation with the shared `KOM_API_TOKEN`. Messages that mention a KOM, QOM,
+     Local Legend or segment go there by keyword, without the routing model.
    - `ai_coach`: everything else. It is the default and the fallback if routing fails.
    - (`life_optimization`: Google Calendar. Disabled until Calendar is set up.)
-   A front-end can skip the supervisor by forcing an agent (Telegram `/twin`; the
-   next-session decision forces `ai_coach`).
+   A front-end can skip the supervisor by forcing an agent (Telegram `/twin` and `/kom`, the
+   dashboard's agent picker; the next-session decision forces `ai_coach`).
 3. **The agent** answers. With `local_only` set, the Coach, Twin and Racing nodes
    switch to their local versions in `agents/local.py`. With `use_claude` set (the chat default
    when a Claude token exists), the Coach,
@@ -680,7 +685,7 @@ service flow chart, busy hours, per-component token table, and the latest calls.
   - **Morning briefing** from `BRIEFING_TIME`, once last night's data is in (10:00 at the
     latest, §4.3): syncs first, re-checks the next session with last night's sleep/HRV, then
     computed facts plus that shared decision.
-  - **Chat** (with 3 h conversation memory), `/twin`, `/claude`, `/gemini`, `/local`, `/strava`, `/briefing`,
+  - **Chat** (with 3 h conversation memory), `/twin`, `/kom` (the KOM agent), `/claude`, `/gemini`, `/local`, `/strava`, `/briefing`,
     `/week` (the 7-day plan, §4.6b), `/workout` (structured workouts with Push to
     Intervals.icu, §4.6c, also sent every morning after the check-in), `/gym` (log lifts,
     §4.11), `/sync`, `/reset`.
@@ -905,7 +910,7 @@ still fits; the athlete approves each change.
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |
 | `dashboard_api.py` | The `/api/*` JSON endpoints: overview, PMC, wellness, weekly load, plan, focus get/set, next session, activities, Strava-note preview/post, injury report, races, usage (System page), chat, sync | Everything the dashboard shows or does goes through here |
 | `graph.py` | The LangGraph workflow: preprocessor (metrics + readiness + next session), local-model supervisor router, agent nodes, local/cloud switch | The brain: decides which agent answers and what context it gets |
-| `telegram_bot.py` | The Telegram bot: access control, chat with memory, one `COMMANDS` list that builds both `/help` (every command, grouped, with its usage) and the "/" menu, `/twin`, `/claude`/`/gemini`/`/local` model choice, `/strava` preview/post buttons, `/briefing`, `/sync`, `/reset`, `/progress`, `/review`, `/week`, `/workout`, `/gym`, the daily briefing job, session-feedback and check-in buttons | The mobile front-end, the daily push message and the athlete's feedback |
+| `telegram_bot.py` | The Telegram bot: access control, chat with memory, one `COMMANDS` list that builds both `/help` (every command, grouped, with its usage) and the "/" menu, `/twin`, `/kom`, `/claude`/`/gemini`/`/local` model choice, `/strava` preview/post buttons, `/briefing`, `/sync`, `/reset`, `/progress`, `/review`, `/week`, `/workout`, `/gym`, the daily briefing job, session-feedback and check-in buttons | The mobile front-end, the daily push message and the athlete's feedback |
 | `logging_config.py` | Logging setup: daily-rotated files in `logs/` (14 days) plus stdout, quiets noisy libraries | Consistent logs for every process |
 
 ### `agents/`: the specialists
@@ -917,6 +922,7 @@ still fits; the athlete approves each change.
 | `injury.py` | The injury agent: the local model narrates the precomputed report; also builds the `check_injury_risk` tool used by the coach | Answers injury/recovery questions; gates hard sessions |
 | `racing.py` | The race strategist: Gemini ReAct agent with race-plan, race-review, upcoming-races, simulator and history tools | Race pacing, fuelling, taper, race week, post-race reviews |
 | `history.py` | The History Analyst: Gemini ReAct agent that only chooses and interprets: wellness/training summaries, fitness-gain windows, race history and pacing are calculated locally (`core/history_stats.py`), read-only SQL as a last resort; plus a per-metric data-coverage summary | Reports and trends over any past period |
+| `kom.py` | The KOM agent's node: forwards the question and recent conversation to the separate KOM service (`KOM_URL`, `X-Kom-Token`), logs the call as service `kom` | Strava segment and KOM questions, answered by `/opt/kom` with Claude |
 | `twin.py` | The Athlete Twin: Gemini ReAct agent with the load-projection and ride-time simulators | What-if scenarios and fitness projections |
 | `local.py` | "Local only" versions of the Coach, Twin and Racing agents: code gathers the data and runs the simulators, the local model only writes the answer; compact text context builder | Lets everything run free on the home GPU; also the local coach rules |
 | `tools.py` | Shared LangChain tool wrappers (history search, read-only SQL, wellness trend, power pacing, activity detail, load projection, ride time, upcoming races, race plan, race review, next-session proposal, availability record/cancel, planned sessions) | One implementation of each tool for every agent |

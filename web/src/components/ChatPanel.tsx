@@ -18,6 +18,7 @@ const AGENT_OPTIONS = [
   { value: "athlete_twin", label: "Athlete Twin" },
   { value: "racing_strategy", label: "Racing Strategy" },
   { value: "injury_prevention", label: "Injury & Recovery" },
+  { value: "kom", label: "KOM Agent" },
 ];
 
 const SUGGESTIONS = [
