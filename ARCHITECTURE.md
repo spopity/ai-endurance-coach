@@ -215,6 +215,12 @@ instead of cancelling it (what coaches do on "meh" days):
 
 - **green:** the full plan.
 - **amber:** the planned session stays, quality included, ~20% shorter, with a warm-up test.
+- **The morning check holds for the day:** right after the morning sync the bot stores the
+  verdict (`state/readiness_morning.json`, `readiness.freeze_morning()`), before the briefing
+  and the re-decided next session. For the rest of the day the level is never better than it:
+  a later sync can re-score the numbers (a resting-HR change in Intervals.icu moved TSB from
+  −20 to −18 on 2026-11-26) without turning the 60 min run back into 77 min. It can still get
+  worse (a check-in answer, a session's feedback): the worse of the two wins.
 - **red:** rest or easy only. It needs a hard stop or a cluster:
   - hard stops: ill (check-in or a sick day), TSB −30 or below, 7-day HRV "low", a HIGH
     non-running injury finding;
@@ -833,7 +839,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (190 tests): the 7-day plan (spacing, adapting, two sessions on one day, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text, queued pushes after the morning check and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed), daily carbs, the low-energy check, goals, the adjustment review and the device check. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (191 tests): the 7-day plan (spacing, adapting, two sessions on one day, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text, queued pushes after the morning check and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed), daily carbs, the low-energy check, goals, the adjustment review and the device check. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |
@@ -1020,7 +1026,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env` | Real secrets and settings (see `.env.example`) |
 | `credentials.json`, `token.json` | Google Calendar OAuth (life agent) |
 | `state/strava_tokens.json`, `state/withings_tokens.json` | OAuth tokens written by the auth scripts and refreshed by the app |
-| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `plan_today.json` (today's sessions, kept once training starts, §4.6b), `goals.json` + `goals_status.json` (§4.14), `energy.json` (§4.13), `markers.jsonl` + `adjustments.jsonl` + `reviews/` (§4.15), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `workouts/pinned.json` (pinned sessions converted to steps), `health_alerts.json` (open problems of the hourly health check), `thresholds.json` + `dfa_windows.json` (LT1 / critical speed and the per-activity DFA-alpha1 windows, §4.6d), `backup_nas.json` (last copy to the NAS), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
+| `state/` | `telegram_bot.pickle` (chat memory, previews, settings), `intervals_health.json` (last API state), `garmin_token.json` (the current 24 h Garmin token, chmod 600), `availability.json` (days off / limited days, §4.11), `plan_today.json` (today's sessions, kept once training starts, §4.6b), `readiness_morning.json` (the morning verdict that holds for the day, §4.3), `goals.json` + `goals_status.json` (§4.14), `energy.json` (§4.13), `markers.jsonl` + `adjustments.jsonl` + `reviews/` (§4.15), `workouts/<date>.json` (workouts pushed to Intervals.icu, §4.6c), `workouts/pinned.json` (pinned sessions converted to steps), `health_alerts.json` (open problems of the hourly health check), `thresholds.json` + `dfa_windows.json` (LT1 / critical speed and the per-activity DFA-alpha1 windows, §4.6d), `backup_nas.json` (last copy to the NAS), `daily_metrics_health_before_garmin.csv` (the Intervals.icu health values replaced by Garmin on 2026-10-25) |
 | `logs/` | Rotating logs for each process, plus `sync-cron.log` |
 | `venv/` | The Python virtualenv |
 | `/var/backups/ai-coach/` | Encrypted nightly backups (`db-*.dump.enc`, `state-*.tar.gz.enc`), coach-only (0600) |

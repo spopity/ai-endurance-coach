@@ -34,6 +34,7 @@ from core.schedule import build as build_schedule, markdown as schedule_markdown
 from core.telegram_format import md_to_telegram_html, split_message
 from core.db import load_env
 from core import availability, feedback, strava, workouts
+from core.readiness import freeze_morning
 from core.next_session import (
     ProposalError, apply_proposal, discard_proposal, latest_decision, replan as replan_next_session, session_line,
     why_line,
@@ -432,6 +433,10 @@ async def deliver_briefing(bot, chat_id: int, chat_data: dict):
             await run_sync(BRIEFING_SYNC_DAYS)  # last night's HRV + yesterday's sessions
         except Exception as e:
             logger.warning(f"Pre-briefing sync failed, using stored data: {e}")
+        try:   # the morning verdict holds for the day (core/readiness.py)
+            await asyncio.to_thread(freeze_morning)
+        except Exception:
+            logger.error("Storing the morning readiness failed", exc_info=True)
         text = await build_briefing()
         await send_markdown_to(bot, chat_id, text)
         get_history(chat_data)  # resets the thread first if it went idle

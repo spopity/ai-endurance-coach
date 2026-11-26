@@ -237,3 +237,25 @@ def test_morning_check_updates_a_workout_pushed_the_day_before(one_day):
     sent = W.morning_sync(today)
     assert calls[-1][:2] == ("PUT", "/events/42") and calls[-1][2]["moving_time"] == 60 * 60
     assert "updated" in sent[0] and not W.for_day(today)["workouts"][0]["changed"]
+
+
+def test_morning_verdict_holds_for_the_day(monkeypatch):
+    from datetime import date
+    from core import readiness as R
+    today = {"d": date(2026, 11, 26)}
+    monkeypatch.setattr(R, "_local_today", lambda: today["d"])
+    for name in ("hrv_status", "sleep_status", "illness_status", "feedback_signals"):
+        monkeypatch.setattr(R, name, lambda *a, **k: None)
+    monkeypatch.setattr(R, "cached", lambda key, ttl, fn: {"findings": [], "overall": "ok"})
+    tsb = {"v": -21.0}
+    monkeypatch.setattr(R, "current_readiness", lambda: R.readiness_context(tsb["v"]))
+    assert R.freeze_morning()["level"] == "amber"
+    tsb["v"] = -18.0                       # a later sync re-scores the loads: the day stays amber
+    r = R.readiness_context(tsb["v"])
+    assert r["level"] == "amber" and r["held_from_morning"]
+    tsb["v"] = -35.0                       # worse later in the day: the worse one wins
+    assert R.readiness_context(tsb["v"])["level"] == "red"
+    assert R.freeze_morning()["level"] == "amber"   # a second briefing doesn't replace it
+    tsb["v"] = -5.0                        # the next day starts fresh
+    today["d"] = date(2026, 11, 27)
+    assert R.readiness_context(tsb["v"])["level"] == "green"

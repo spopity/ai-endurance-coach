@@ -24,7 +24,7 @@ def entry(kind: str, days: list[date], max_minutes: int | None = None, session: 
 
 
 @pytest.fixture(autouse=True)
-def _no_ftp_lookup(monkeypatch):
+def _no_ftp_lookup(monkeypatch, tmp_path):
     """Workouts scale % targets to the training FTP from the database - not in tests."""
     from core import workouts
     monkeypatch.setattr(workouts, "_ftp_scale", lambda: 1.0)
@@ -32,6 +32,8 @@ def _no_ftp_lookup(monkeypatch):
     monkeypatch.setattr(workouts, "_z2_hi", lambda: 72)
     from core import energy
     monkeypatch.setattr(energy, "low_energy", lambda *a, **k: False)
+    from core import readiness
+    monkeypatch.setattr(readiness, "MORNING_FILE", os.path.join(str(tmp_path), "readiness_morning.json"))
 
 
 @pytest.fixture(autouse=True)

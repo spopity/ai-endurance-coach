@@ -19,9 +19,18 @@ the athlete's "a bit off" check-in, is red.
 
 Running findings never set the level: they only limit running (`running.limit`), so a running
 warning moves the hard work to the bike instead of cancelling it.
+
+The morning check holds for the day: freeze_morning() stores the verdict right after the
+morning sync (before the briefing and the re-decided next session), and for the rest of that
+day the level is never better than it. A later sync can recalculate the numbers (e.g.
+Intervals.icu re-scoring the loads after a resting-HR change moved TSB from -20 to -18) - that
+must not turn the day's 60 min run back into 77 min after the athlete got the 60. It can still
+get worse during the day (a check-in answer, a session's feedback): the worse of the two wins.
 """
+import json
 import logging
-from datetime import date, timedelta
+import os
+from datetime import date, datetime, timedelta
 
 from core.feedback import signals as feedback_signals
 from core.injury_checks import SLEEP_MIN_HOURS, run_injury_checks
@@ -30,6 +39,9 @@ from core.overview import cached, hrv_status, query
 logger = logging.getLogger("AI_COACH_V1.readiness")
 
 EMOJI = {"red": "🔴", "amber": "🟠", "green": "🟢"}
+RANK = {"green": 0, "amber": 1, "red": 2}
+MORNING_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state",
+                            "readiness_morning.json")
 
 POOR_SLEEP_SCORE = 70
 VERY_SHORT_SLEEP_HOURS = 5.0   # one night this short is a signal on its own
@@ -166,6 +178,10 @@ def readiness_context(tsb: float | None) -> dict:
     findings = (injury or {}).get("findings", [])
     ill = illness_status()
     level, text = verdict(tsb, hrv, findings, subjective, sleep, ill)
+    morning = morning_verdict()
+    held = bool(morning and RANK.get(morning["level"], 0) > RANK[level])
+    if held:
+        level, text = morning["level"], f"{morning['verdict']} (this morning's check - it holds for the day)"
     return {
         "level": level,
         "verdict": text,
@@ -176,7 +192,42 @@ def readiness_context(tsb: float | None) -> dict:
         "injury_overall": injury and injury["overall"],
         "injury_flags": [f"{f['severity'].upper()}: {f['title']}" for f in findings
                          if f["severity"] in ("high", "caution")],
+        **({"held_from_morning": True} if held else {}),
     }
+
+
+def _local_today() -> date:
+    from core.schedule import TZ
+    return datetime.now(TZ).date()
+
+
+def morning_verdict(today: date | None = None) -> dict | None:
+    """This morning's stored verdict {date, level, verdict, at}, or None (not today's / none yet)."""
+    try:
+        with open(MORNING_FILE) as f:
+            m = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return m if m.get("date") == (today or _local_today()).isoformat() and m.get("level") in RANK else None
+
+
+def freeze_morning(today: date | None = None) -> dict | None:
+    """Stores this morning's verdict (once a day: a later /briefing doesn't replace it)."""
+    today = today or _local_today()
+    if morning_verdict(today):
+        return morning_verdict(today)
+    if os.path.exists(MORNING_FILE):
+        os.remove(MORNING_FILE)   # yesterday's: compute today's without its floor
+    r = current_readiness()
+    m = {"date": today.isoformat(), "level": r["level"], "verdict": r["verdict"],
+         "at": datetime.now().astimezone().isoformat(timespec="minutes")}
+    tmp = MORNING_FILE + ".tmp"
+    os.makedirs(os.path.dirname(MORNING_FILE), exist_ok=True)
+    with open(tmp, "w") as f:
+        json.dump(m, f)
+    os.replace(tmp, MORNING_FILE)
+    logger.info(f"Morning readiness for {today}: {m['level']} - {m['verdict']}")
+    return m
 
 
 def current_readiness() -> dict:
