@@ -34,7 +34,7 @@ RAMP_BUCKETS = [(-99, 0, "falling"), (0, 3, "0-3/week"), (3, 5, "3-5/week"), (5,
 ABSORB_HRV_PCT = -3.0
 MIN_WEEKS = 3
 KINDS = {"plan": "Plan", "stimulus": "Stimulus", "thresholds": "Thresholds", "ftp": "FTP",
-         "goal": "Goal", "energy": "Energy"}
+         "goal": "Goal", "energy": "Energy", "review": "Weekly review"}
 
 
 def _append(path: str, row: dict):

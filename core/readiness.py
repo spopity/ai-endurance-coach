@@ -118,17 +118,20 @@ def running_limit(findings: list[dict]) -> dict:
 
 def verdict(tsb: float | None, hrv: dict | None, findings: list[dict] | None = None,
             subjective: tuple[list, list] | None = None, sleep: dict | None = None,
-            illness: dict | None = None) -> tuple[str, str]:
+            illness: dict | None = None, lines: dict | None = None) -> tuple[str, str]:
     """(level, one-line verdict) - level is 'red', 'amber' or 'green'. `findings` are the injury
     checks' findings (running ones are ignored here, see running_limit), `subjective` is (red, amber)
     reasons from the athlete's own feedback (core/feedback.signals), `sleep` is sleep_status()."""
     red = list((subjective or ([], []))[0])
     recovery = list((subjective or ([], []))[1])   # signals of a body that hasn't recovered
     other = []                                      # load signals: trim the day, don't stop it
-    if tsb is not None and tsb <= -30:
+    # Form lines follow the plan's ramp (core/periodization.form_lines, approved 2026-11-26): the
+    # fatigue a loading week builds on purpose doesn't trim the day; fixed -20 / -30 without a plan.
+    amber_at, red_at = (lines["amber"], lines["red"]) if lines else (-20.0, -30.0)
+    if tsb is not None and tsb <= red_at:
         red.append("very deep fatigue")
-    elif tsb is not None and tsb <= -20:
-        other.append("heavy fatigue")
+    elif tsb is not None and tsb <= amber_at:
+        other.append("more fatigue than the plan builds" if lines and lines.get("ramp") else "heavy fatigue")
     if hrv and hrv["status"] == "low":
         red.append("HRV well below normal")
     elif hrv and hrv["status"] == "below":
@@ -184,7 +187,8 @@ def readiness_context(tsb: float | None, hold: bool = True) -> dict:
         sleep = None
     findings = (injury or {}).get("findings", [])
     ill = illness_status()
-    level, text = verdict(tsb, hrv, findings, subjective, sleep, ill)
+    lines = _form_lines()
+    level, text = verdict(tsb, hrv, findings, subjective, sleep, ill, lines)
     morning = morning_verdict() if hold else None
     held = bool(morning and RANK.get(morning["level"], 0) > RANK[level])
     if held:
@@ -200,7 +204,20 @@ def readiness_context(tsb: float | None, hold: bool = True) -> dict:
         "injury_flags": [f"{f['severity'].upper()}: {f['title']}" for f in findings
                          if f["severity"] in ("high", "caution")],
         **({"held_from_morning": True} if held else {}),
+        **({"form_lines": lines} if lines else {}),
     }
+
+
+def _form_lines() -> dict | None:
+    """This week's form lines from the plan (None: the fixed -20 / -30)."""
+    try:
+        from core.periodization import current_block, form_lines
+        rows = query("SELECT ctl FROM daily_metrics WHERE ctl IS NOT NULL ORDER BY day DESC LIMIT 1;")
+        today = _local_today()
+        return form_lines(float(rows[0]["ctl"]) if rows else None, today, current_block(today))
+    except Exception as e:
+        logger.warning(f"Form lines unavailable, using -20 / -30: {e}")
+        return None
 
 
 def _local_today() -> date:

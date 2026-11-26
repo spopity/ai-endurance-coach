@@ -34,6 +34,10 @@ def _no_ftp_lookup(monkeypatch, tmp_path):
     monkeypatch.setattr(energy, "low_energy", lambda *a, **k: False)
     from core import readiness
     monkeypatch.setattr(readiness, "MORNING_FILE", os.path.join(str(tmp_path), "readiness_morning.json"))
+    from core import periodization
+    monkeypatch.setattr(periodization, "ramp_history", lambda: [(periodization.COMEBACK_FROM, periodization.COMEBACK_RAMP)])
+    monkeypatch.setattr(periodization, "current_block", lambda today: None)
+    monkeypatch.setattr(readiness, "_form_lines", lambda: None)
 
 
 @pytest.fixture(autouse=True)

@@ -66,6 +66,7 @@ BRIEFING_SYNC_DAYS = 3
 BRIEFING_CUTOFF = dtime(10, 0)
 BRIEFING_RETRY_MINUTES = 15
 MIDDAY_LOG_TIME = dtime(13, 0)
+WEEKLY_REVIEW_TIME = dtime(19, 0)   # Sundays (core/weekly_review.py)
 
 # Every command, once: /help and the Telegram "/" menu are both built from this list.
 # (group, command, usage after the command, menu text, help text)
@@ -80,6 +81,8 @@ COMMANDS = [
      "log the main lifts (kg x reps x sets, bw = bodyweight); the plan progresses the weights from them"),
     ("📈 Progress and goals", "progress", "", "Am I getting faster? Markers, verdict, goals, levels",
      "am I getting faster? Markers per 4 weeks, the verdict, your goals, the level of each session type"),
+    ("📈 Progress and goals", "weekly", "", "Weekly review: how the week went, changes to approve",
+     "the weekly review now (it also arrives every Sunday evening): last week, and up to 3 changes to the plan, each with Apply / Discard"),
     ("📈 Progress and goals", "review", "", "Quarterly review: what worked, load you absorb",
      "the quarterly review: what the coach changed and what followed, the load you absorb"),
     ("🤖 Ask the coach", "twin", "<scenario>", "Ask the Athlete Twin a what-if directly",
@@ -690,6 +693,58 @@ async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_markdown_to(context.bot, update.effective_chat.id, text)
 
 
+async def deliver_weekly_review(bot, chat_id: int):
+    """Writes the weekly review and sends it: the summary, then each proposal with Apply / Discard."""
+    from core import weekly_review
+    stop = asyncio.Event()
+    typing = asyncio.create_task(keep_typing(bot, chat_id, stop))
+    try:
+        review = await asyncio.to_thread(weekly_review.run)
+    except Exception as e:
+        logger.error("Weekly review failed", exc_info=True)
+        await bot.send_message(chat_id, f"❌ Weekly review failed: {e}")
+        return
+    finally:
+        stop.set()
+        await typing
+    await send_markdown_to(bot, chat_id, weekly_review.markdown(review))
+    for p in review["proposals"]:
+        buttons = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Apply", callback_data=f"wr:apply:{review['date']}:{p['id']}"),
+            InlineKeyboardButton("✖ Discard", callback_data=f"wr:discard:{review['date']}:{p['id']}"),
+        ]])
+        text = weekly_review.proposal_text(p)
+        try:
+            await bot.send_message(chat_id, md_to_telegram_html(text), parse_mode=ParseMode.HTML, reply_markup=buttons)
+        except BadRequest:
+            await bot.send_message(chat_id, text, reply_markup=buttons)
+
+
+async def cmd_weekly(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await deliver_weekly_review(context.bot, update.effective_chat.id)
+
+
+async def job_weekly_review(context: ContextTypes.DEFAULT_TYPE):
+    if datetime.now(LOCAL_TZ).weekday() == 6:
+        await deliver_weekly_review(context.bot, context.job.chat_id)
+
+
+async def on_weekly_review_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from core import weekly_review
+    query = update.callback_query
+    if not await button_allowed(update):
+        return
+    _, action, review_date, pid = query.data.split(":", 3)
+    await query.answer("Applying..." if action == "apply" else "Discarding...")
+    try:
+        note = await asyncio.to_thread(weekly_review.resolve, review_date, int(pid), action == "apply")
+    except Exception as e:
+        logger.error("Weekly review button failed", exc_info=True)
+        note = f"Failed: {e}"
+    logger.info(f"Weekly review {review_date} #{pid} {action}: {note}")
+    await query.edit_message_text(query.message.text + "\n\n" + ("✅ " if note.startswith("Applied") else "• ") + note)
+
+
 async def cmd_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """The quarterly review so far (core/adjustments.py): adjustments and what followed, load absorbed, goals."""
     from core import adjustments
@@ -847,6 +902,8 @@ def main():
     application.add_handler(CommandHandler("week", cmd_week, filters=allowed))
     application.add_handler(CommandHandler("progress", cmd_progress, filters=allowed))
     application.add_handler(CommandHandler("review", cmd_review, filters=allowed))
+    application.add_handler(CommandHandler("weekly", cmd_weekly, filters=allowed))
+    application.add_handler(CallbackQueryHandler(on_weekly_review_button, pattern=r"^wr:"))
     application.add_handler(CommandHandler("workout", cmd_workout, filters=allowed))
     application.add_handler(CommandHandler("gym", cmd_gym, filters=allowed))
     application.add_handler(CallbackQueryHandler(on_workout_button, pattern=r"^wo:"))
@@ -859,6 +916,8 @@ def main():
     application.job_queue.run_daily(job_midday_log, MIDDAY_LOG_TIME.replace(tzinfo=LOCAL_TZ), name="readiness-midday-log")
     for chat_id in allowed_ids:  # private chat id == user id
         application.job_queue.run_daily(job_briefing, briefing_at, chat_id=chat_id, name=f"briefing-{chat_id}")
+        application.job_queue.run_daily(job_weekly_review, WEEKLY_REVIEW_TIME.replace(tzinfo=LOCAL_TZ),
+                                        chat_id=chat_id, name=f"weekly-review-{chat_id}")
         # a restart during the morning wait picks the check up again (the daily job won't re-fire)
         now = datetime.now(LOCAL_TZ).time().replace(tzinfo=None)
         if dtime(hh, mm) <= now < dtime(12, 0) and not morning_verdict():

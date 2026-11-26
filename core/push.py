@@ -23,7 +23,7 @@ from core.db import get_connection
 from core.feedback import signals as feedback_signals
 from core.injury_checks import run_injury_checks
 from core.overview import cached, hrv_status, query
-from core.periodization import CTL_GAIN_PER_WEEK, comeback, monday
+from core.periodization import CTL_GAIN_PER_WEEK, comeback, comeback_ramp, monday
 from core.readiness import illness_status, sleep_status, verdict
 
 logger = logging.getLogger("AI_COACH_V1.push")
@@ -33,9 +33,9 @@ DEFAULT_DAYS, MAX_DAYS = 7, 14
 MIN_JUDGED_DAYS = 3                  # a push stopped sooner says nothing, unless it was too much
 COOLDOWN_DAYS = 7
 RAMP_BY_LEVEL = {1: 4.0, 2: 5.0}     # CTL/week. In the athlete's benchmark years, ramps above ~6 mostly ended in a collapse
-# While regaining lost fitness (core/periodization.comeback) the plan itself ramps at 5/week, so a
-# push sits above that. Still capped by the benchmark weeks at this CTL and watched by the ramp check.
-COMEBACK_RAMP_BY_LEVEL = {1: 6.0, 2: 7.0}
+# While regaining lost fitness (core/periodization.comeback) the plan itself ramps faster (5/week, or
+# what the weekly review changed it to), so a push sits 1 (level 1) or 2 (level 2) above the plan's
+# ramp. Still capped by the benchmark weeks at this CTL and watched by the ramp check.
 BENCHMARK_YEARS = (2022, 2024)       # years with real training time (the latest two had little: not a fair yardstick)
 BENCHMARK_BAND = 5                   # weeks that started within this many CTL of today's
 MIN_BENCHMARK_WEEKS = 4
@@ -100,10 +100,10 @@ def benchmark(ctl: float) -> dict | None:
 
 
 def week_ceiling(ctl: float, level: int, plan_max: float, available_days: int, bench: dict | None,
-                 comeback: bool = False) -> int:
+                 comeback: bool = False, plan_ramp: float = 5.0) -> int:
     """The most load a pushed week may reach: the ramp's load, within the benchmark, scaled for
     days off. Never below the plan's own maximum - a push can't make the plan smaller."""
-    ramp = (COMEBACK_RAMP_BY_LEVEL if comeback else RAMP_BY_LEVEL)[level]
+    ramp = plan_ramp + level if comeback else RAMP_BY_LEVEL[level]
     ramp_load = 7 * ctl + 7 * ramp / CTL_GAIN_PER_WEEK
     if bench:
         ramp_load = min(ramp_load, bench["top"])
@@ -237,7 +237,8 @@ def status(back: dict | None = None, today: date | None = None) -> dict:
         bench = benchmark(week["ctl"])
         plan_max = float(week["target_weekly_load_max"] or 0)
         back_on = comeback(week["ctl"], monday(today))
-        ceiling = week_ceiling(week["ctl"], level, plan_max, week["available_days"], bench, back_on)
+        ceiling = week_ceiling(week["ctl"], level, plan_max, week["available_days"], bench, back_on,
+                               comeback_ramp(monday(today)))
         out["comeback"] = back_on
         room = max(0, round(ceiling - week["load"]))
         if not room:

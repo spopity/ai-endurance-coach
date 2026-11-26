@@ -8,6 +8,8 @@ dashboard, a Telegram bot, and coach notes written into Strava activity descript
 
 This document explains the overall design, the logic behind the main decisions, and then
 lists **every file in the project** with what it does and how it affects the whole.
+Where each training rule comes from (research, coaching practice or the athlete's own data), and
+the rules that depart from expert practice, is in `EVIDENCE.md`.
 
 ---
 
@@ -248,7 +250,16 @@ instead of cancelling it (what coaches do on "meh" days):
     or one under 5 h, a Recovery or Subjective caution such as resting HR up, the
     athlete's own amber feedback: very sore, sore + low motivation, "a bit off", a poor night
     + high life stress, sore legs after the last hard session).
-- Load cautions (TSB −20, ACWR, monotony...) and single recovery signals are amber.
+- Load cautions (form, ACWR, monotony...) and single recovery signals are amber.
+- **Planned fatigue isn't a warning** (approved by the athlete 2026-11-26, a milestone:
+  `EVIDENCE.md` findings 1-2). A steady ramp of r CTL/week holds form near −5r by design, so in a
+  loading week (Base, Build, race prep) the form lines sit below that
+  (`periodization.form_lines()`): amber 10 under it, red 15 under, never above the fixed −20 / −30.
+  At the +5 comeback ramp form ~−25 is expected, amber is −35 and red −40; Base +2 keeps −20 / −30;
+  recovery, taper and race weeks keep −20 / −30. The ACWR lines follow the same form (ACWR = 1 − TSB/CTL)
+  when that's wider. Heavy but planned form shows as an info finding. **Monotony** over 2.0 is a
+  caution only when the last 7 days' load is above the week's plan maximum (Foster: monotony with
+  high strain); otherwise it's info.
 - One poor night is only a note (`sleep.note`): keep the session, start with the warm-up test.
 - **Illness early warning** (`core/illness.py`, `illness_warning` in the context). Last night's
   numbers are compared with the 28 nights before, skipping the last 2:
@@ -358,7 +369,10 @@ disagree. Rules:
     2/week in Base and 3/week in Build; recovery weeks are 50-70% of 7×CTL.
   - **Comeback** (`comeback()`, from 2026-11-23): while CTL is under 50, loading weeks ramp
     at +5 CTL/week, capped at the athlete's top weeks (p90) at that CTL in 2022-24, and never
-    below the normal ramp. Earlier weeks keep the targets they were judged by.
+    below the normal ramp. Earlier weeks keep the targets they were judged by. The weekly review
+    (§4.17) can change the ramp to 4, 5 or 6 from the next Monday, once approved: a dated history
+    (`ramp_history()`, `athlete_settings` key `comeback_ramp`), so replayed weeks keep theirs. A push
+    experiment sits 1-2 CTL/week above whatever the plan's ramp is.
   - Future weeks are a projection assuming completion (this week: actual load so far
     plus the days left; deloads every 3 loading weeks, since future HRV is unknown).
     `notes` says why each week has its phase (shown on the plan card and given to the
@@ -840,6 +854,31 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
   3. the load the athlete absorbs: the weeks of the last year grouped by CTL ramp, with the next week's HRV vs its 4-week normal, and the highest ramp that kept HRV within -3%;
   4. the goals.
 
+### 4.17 Weekly review (`core/weekly_review.py`)
+
+Once a week the AI steps back from the day-to-day decisions and asks whether the plan itself
+still fits; the athlete approves each change.
+
+- **When:** Sundays at 19:00 (Telegram), or `/weekly` on demand. A run on another day reviews the
+  last full Monday-Sunday week.
+- **Facts from code:** the coach's full context (`graph.global_preprocessor`) plus the week: the
+  plan's target and verdict, each session with load and RPE/legs, the check-ins, the readiness log
+  (morning vs 13:00), the comeback ramp, the guidance in force and the previous review's decisions.
+- **Judgment from the AI** (Claude, Gemini as fallback): a 3-5 sentence summary and at most 3
+  proposals, each from a fixed menu that existing code applies. The prompt keeps the athlete's
+  choices (pushed above the plan, max 3 runs, no CTL-ramp cap, relaxed readiness) and asks for
+  trends over 2-4 weeks, with the numbers quoted:
+  - `guidance`: a note the daily coach follows for 7 days (`weekly_guidance` in its context, rule
+    21); never over readiness, illness, injury or the athlete's own request;
+  - `comeback_ramp`: 4, 5 or 6 CTL/week from the next Monday (§4.6);
+  - `push`: a push experiment (§4.7b), with its own blocks;
+  - `pin`: a session on a day of the next 7 (availability, §4.11).
+- **Code validates** each proposal (on the menu, values in range, not a no-training day, not
+  already the setting) and drops the rest; **Apply / Discard** buttons under each. Apply re-checks,
+  runs it, re-plans, and logs it in the adjustment log (kind `review`), so the quarterly review
+  shows what followed. A new review expires the last one's open proposals.
+- **State:** `state/weekly_reviews/<date>.json`; the guidance in `athlete_settings` (`weekly_guidance`).
+
 ### 4.16 Device check (`core/devices.py`, in `scripts/check_health.py`)
 
 - **The watch:**
@@ -860,7 +899,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (196 tests): the 7-day plan (spacing, adapting, two sessions on one day, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, the morning wait for last night's data, the midday log and the twice-weekly resting HR, workout text, queued pushes after the morning check and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed), daily carbs, the low-energy check, goals, the adjustment review and the device check. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (205 tests): the 7-day plan (spacing, adapting, two sessions on one day, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, the morning wait for last night's data, the midday log, the twice-weekly resting HR, the weekly review (menu, validation, apply once, expiry), the dated comeback ramp, the plan-relative form lines and strain-gated monotony, workout text, queued pushes after the morning check and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed), daily carbs, the low-energy check, goals, the adjustment review and the device check. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |
@@ -929,6 +968,8 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `briefing.py` | The morning briefing: computed facts (readiness, HRV, load vs plan, warnings, race countdown) plus the shared next-session decision, re-checked that morning | The daily Telegram message |
 | `strava.py` | A minimal Strava client: token refresh, list/get/update activities, scope check | Used by name sync and coach notes |
 | `workouts.py` | Turns a plan day's sessions into Intervals.icu workout text (power % FTP, HR zones, reps trimmed for amber / short days) and pushes, updates or removes them on the Intervals.icu calendar | Workouts on the watch / Zwift with one tap, never without it |
+| `weekly_review.py` | The weekly review: facts from code, a summary and up to 3 proposals from a fixed menu by the AI, applied only on the athlete's tap, §4.17 | The plan itself gets a weekly second look, with the athlete deciding |
+| `resting_hr.py` | Sets the Intervals.icu resting HR to the watch's 7-day median on Mondays and Thursdays, §4.3 | HR-based loads (and form) stop being re-scored daily |
 | `testing.py` | The test calendar: FTP test at the end of a recovery week, CS test as the first quality run after it, by the long-term plan (§4.6d) | Tests land where they are worth most and move with the plan |
 | `thresholds.py` | LT1 from DFA-alpha1 (chest-strap RR data), Zone 2 from it, critical speed from a CS test; `state/thresholds.json` (§4.6d) | Zones from the athlete's own physiology, not fixed % of FTP |
 | `schedule.py` | The rolling 7-day plan: lays out what's left of the week's session mix around availability, readiness and the hard/easy rules, with concrete targets | One day-by-day plan for the coach, dashboard and Telegram; adapts after every sync |

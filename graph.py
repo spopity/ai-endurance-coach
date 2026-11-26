@@ -13,6 +13,7 @@ from core.next_session import latest_decision
 from core.progress import context as progress_context
 from core.progression import context as progression_context
 from core.push import status as push_status
+from core.weekly_review import guidance as weekly_guidance
 from core.readiness import readiness_context
 from core.schedule import build as build_schedule, summary as schedule_summary
 from core.history import split_state, format_for_supervisor
@@ -62,7 +63,8 @@ def global_preprocessor(state: AgentState):
                     ("next_session_decided", latest_decision),
                     ("push", lambda: push_status(metrics.get("return_to_training"))),
                     ("progress", progress_context),
-                    ("progression", progression_context)):
+                    ("progression", progression_context),
+                    ("weekly_guidance", weekly_guidance)):
         try:
             metrics[key] = fn()
         except Exception as e:

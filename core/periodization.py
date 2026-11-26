@@ -89,6 +89,52 @@ RAMP = {"Base": 2.0, "Build": 3.0}
 COMEBACK_CTL = 50.0
 COMEBACK_RAMP = 5.0
 COMEBACK_FROM = date(2026, 11, 23)
+# The weekly review (core/weekly_review.py) can change the comeback ramp from a given week on, with
+# the athlete's approval. Kept as a dated history (athlete_settings 'comeback_ramp': [{from, ramp}])
+# so replayed weeks keep the target they were judged by.
+RAMP_SETTING = "comeback_ramp"
+RAMP_CHOICES = (4.0, 5.0, 6.0)
+
+
+def ramp_history() -> list[tuple[date, float]]:
+    """[(first week, CTL/week)], oldest first: COMEBACK_RAMP from COMEBACK_FROM, then approved changes."""
+    hist = [(COMEBACK_FROM, COMEBACK_RAMP)]
+    try:
+        from core.overview import query
+        rows = query("SELECT value FROM athlete_settings WHERE key = %s;", (RAMP_SETTING,))
+        hist += [(date.fromisoformat(e["from"]), float(e["ramp"])) for e in ((rows[0]["value"] if rows else None) or [])]
+    except Exception as e:
+        logger.warning(f"Comeback ramp history unavailable: {e}")
+    return sorted(hist)
+
+
+def comeback_ramp(wk: date, hist: list[tuple[date, float]] | None = None) -> float:
+    """The comeback ramp that applies to the week starting wk."""
+    ramp = COMEBACK_RAMP
+    for start, r in (hist if hist is not None else ramp_history()):
+        if start <= wk:
+            ramp = r
+    return ramp
+
+
+def set_comeback_ramp(ramp: float, from_week: date) -> list[dict]:
+    """Adds a change (replacing one for the same or a later week). Returns the stored history."""
+    from core.db import get_connection
+    if float(ramp) not in RAMP_CHOICES:
+        raise ValueError(f"ramp must be one of {RAMP_CHOICES}")
+    from_week = monday(from_week)
+    kept = [{"from": d.isoformat(), "ramp": r} for d, r in ramp_history()[1:] if d < from_week]
+    value = kept + [{"from": from_week.isoformat(), "ramp": float(ramp)}]
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO athlete_settings (key, value, updated_at) VALUES (%s, %s, now())
+                           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();""",
+                        (RAMP_SETTING, json.dumps(value)))
+        conn.commit()
+    finally:
+        conn.close()
+    return value
 CTL_GAIN_PER_WEEK = 1 - math.exp(-7 / 42)
 MIN_TARGET = 120                     # loading-week floor (TSS) so a near-zero CTL still gets a real week
 
@@ -303,8 +349,42 @@ def benchmark_top(weeks: list[tuple[float, float]], ctl: float, share: float = 0
     return loads[min(len(loads) - 1, int(share * len(loads)))]
 
 
+# Form (TSB) lines for readiness and the injury checks (approved 2026-11-26). Coaches treat planned
+# fatigue differently from unexpected fatigue: a steady ramp of r CTL/week holds TSB near -5r by
+# design (CTL lags the load by 42 days, ATL by 7: TSB = -(42-7) * r/7), so in a loading week the lines
+# sit FORM_MARGIN below that, and never above the fixed -20 / -30.
+FORM_AMBER, FORM_RED = -20.0, -30.0
+FORM_MARGIN_AMBER, FORM_MARGIN_RED = 10.0, 15.0
+LOADING_PHASES = ("Base", "Build", "Race prep")
+
+
+def current_block(today: date) -> dict | None:
+    """This week's training_blocks row {phase, is_deload, target_weekly_load_max}, or None."""
+    try:
+        from core.overview import query
+        rows = query("SELECT phase, is_deload, target_weekly_load_min, target_weekly_load_max FROM training_blocks "
+                     "WHERE start_date <= %s AND end_date >= %s ORDER BY start_date DESC LIMIT 1;", (today, today))
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.warning(f"Current training block unavailable: {e}")
+        return None
+
+
+def form_lines(ctl: float | None, today: date, block: dict | None = None) -> dict:
+    """{expected, ramp, amber, red}: the form the plan's own ramp produces this week, and where form
+    turns amber / red. Recovery, taper and race weeks (or no plan) keep the fixed -20 / -30."""
+    wk = monday(today)
+    phase = (block or {}).get("phase")
+    ramp = 0.0
+    if phase in LOADING_PHASES and not (block or {}).get("is_deload"):
+        ramp = comeback_ramp(wk) if ctl is not None and comeback(ctl, wk) else RAMP["Base" if phase == "Base" else "Build"]
+    expected = -5.0 * ramp
+    return {"expected": expected, "ramp": ramp,
+            "amber": min(FORM_AMBER, expected - FORM_MARGIN_AMBER), "red": min(FORM_RED, expected - FORM_MARGIN_RED)}
+
+
 def week_targets(kind: str, ctl: float, available_days: int = 7, back: bool = False,
-                 cap: float | None = None) -> tuple[float, float]:
+                 cap: float | None = None, ramp: float = COMEBACK_RAMP) -> tuple[float, float]:
     """Weekly TSS range, scaled down pro rata for days the athlete can't train. `back`: comeback ramp,
     capped at `cap` (the benchmark top at this CTL) but never below the normal ramp."""
     hold = 7 * ctl
@@ -317,7 +397,7 @@ def week_targets(kind: str, ctl: float, available_days: int = 7, back: bool = Fa
         phase = "Base" if kind.startswith("base") else "Build"
         center = max(hold + 7 * RAMP[phase] / CTL_GAIN_PER_WEEK, MIN_TARGET)
         if back:
-            fast = hold + 7 * COMEBACK_RAMP / CTL_GAIN_PER_WEEK
+            fast = hold + 7 * ramp / CTL_GAIN_PER_WEEK
             center = max(center, min(fast, cap) if cap else fast)
         lo, hi = center * 0.9, center * 1.1
     scale = available_days / 7
@@ -539,6 +619,7 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
     weeks, ctl, tsb, hrv = _history(conn, REPLAY_FROM, today)
     steady = _steady_rides(conn, REPLAY_FROM - timedelta(days=21), today)
     bench = benchmark_weeks(conn)
+    ramps = ramp_history()
     races = load_races(today) if races is None else races
     availability = avail.load(today) if availability is None else availability
 
@@ -560,7 +641,8 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
         ctl_end = _at(ctl, wk + timedelta(days=6), ctl_start)
         kind, why = week_kind(s, _at(tsb, eve), hrv_trend(hrv, eve), race=race_plan(wk, races))
         free = available(wk)
-        lo, hi = week_targets(kind, ctl_start, free, comeback(ctl_start, wk), benchmark_top(bench, ctl_start))
+        lo, hi = week_targets(kind, ctl_start, free, comeback(ctl_start, wk), benchmark_top(bench, ctl_start),
+                              comeback_ramp(wk, ramps))
         load, days = weeks.get(wk, (0.0, 0))
         verdict = judge(kind, load, days, lo, hi, free)
         rows.append(_row(wk, s.phase, kind, lo, hi, verdict, _why(why, reason, free), load, races))
@@ -582,11 +664,11 @@ def compute_plan(conn, today: date | None = None, weeks_ahead: int = 12, races: 
             kind, why = week_kind(s, None, None, projected=True, race=race)
         free = available(wk)
         back = comeback(proj_ctl, wk) and kind not in ("recovery", *RACE_TARGETS)
-        lo, hi = week_targets(kind, proj_ctl, free, back, benchmark_top(bench, proj_ctl))
+        lo, hi = week_targets(kind, proj_ctl, free, back, benchmark_top(bench, proj_ctl), comeback_ramp(wk, ramps))
         text = _why(why, reason, free) if i == 0 else _why(
             None, why or "projected - assumes the weeks before are completed", free)
         if back:
-            text += (f"; comeback ramp (+{COMEBACK_RAMP:g} CTL/week while CTL is under {COMEBACK_CTL:g}, "
+            text += (f"; comeback ramp (+{comeback_ramp(wk, ramps):g} CTL/week while CTL is under {COMEBACK_CTL:g}, "
                      "at most your top weeks at this fitness in 2022-24)")
         rows.append(_row(wk, s.phase, kind, lo, hi, None, text, None, races))
         load, days = (lo + hi) / 2, free

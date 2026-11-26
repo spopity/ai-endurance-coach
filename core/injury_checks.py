@@ -23,7 +23,8 @@ from datetime import date, datetime, timedelta
 
 from core.db import get_connection
 from core.mechanical import finding as impact_finding, streams
-from core.periodization import comeback
+from core import periodization
+from core.periodization import FORM_AMBER, comeback, form_lines
 
 logger = logging.getLogger("AI_COACH_V1.injury_checks")
 
@@ -112,6 +113,10 @@ def check_load(data, today, findings, checked, gaps):
     ctl, atl = float(latest["ctl"]), float(latest["atl"])
     tsb = ctl - atl
     checked.append("training load (ACWR, TSB, ramp rate, monotony, recovery weeks)")
+    # Planned fatigue isn't a warning (approved 2026-11-26): the form lines follow the plan's ramp
+    # (core/periodization.form_lines), and so do the ACWR lines, which say the same thing in a ratio.
+    block = periodization.current_block(today)
+    lines = form_lines(ctl, today, block)
 
     if ctl >= 10:
         acwr = atl / ctl
@@ -120,6 +125,9 @@ def check_load(data, today, findings, checked, gaps):
         # recovery signals still watch the absolute progression.
         back = comeback(ctl, today - timedelta(days=today.weekday()))
         high, caution = (ACWR_HIGH_COMEBACK, ACWR_CAUTION_COMEBACK) if back else (ACWR_HIGH, ACWR_CAUTION)
+        if lines["ramp"]:   # ATL that the plan's own ramp produces is no warning: ACWR = 1 - TSB/CTL
+            high = round(max(high, 1 - lines["red"] / ctl), 2)
+            caution = round(max(caution, 1 - lines["amber"] / ctl), 2)
         if acwr >= high:
             findings.append(_finding("high", "Load", f"Acute:chronic load ratio {acwr:.2f}",
                 f"Fatigue (ATL {atl:.0f}) is {acwr:.2f}x fitness (CTL {ctl:.0f}). Ratios above {high:g} are strongly "
@@ -132,12 +140,19 @@ def check_load(data, today, findings, checked, gaps):
             findings.append(_finding("ok", "Load", f"Acute:chronic load ratio {acwr:.2f}",
                 f"Under {caution:g}{' (comeback range)' if back else ''} - load progression is well tolerated."))
 
-    if tsb <= -30:
+    planned = (f" The plan's +{lines['ramp']:g} CTL/week ramp holds form near {lines['expected']:+.0f} by design."
+               if lines["ramp"] else "")
+    if tsb <= lines["red"]:
         findings.append(_finding("high", "Load", f"Form (TSB) {tsb:+.0f}",
-            "Deep fatigue - beyond about -30, overreaching and injury risk rise sharply. Recovery days needed."))
-    elif tsb <= -20:
+            f"Deep fatigue, well beyond what the plan builds (red from {lines['red']:+.0f}).{planned} "
+            "Overreaching and injury risk rise sharply. Recovery days needed."))
+    elif tsb <= lines["amber"]:
         findings.append(_finding("caution", "Load", f"Form (TSB) {tsb:+.0f}",
-            "Productive but heavy training zone; keep an eye on HRV and how sessions feel."))
+            f"More fatigue than the plan builds (amber from {lines['amber']:+.0f}).{planned} "
+            "Keep an eye on HRV and how sessions feel."))
+    elif tsb <= FORM_AMBER:
+        findings.append(_finding("info", "Load", f"Form (TSB) {tsb:+.0f}",
+            f"Heavy, but the fatigue the plan builds on purpose.{planned}"))
 
     ramp = latest.get("ramp_rate")
     if ramp is not None:
@@ -156,10 +171,18 @@ def check_load(data, today, findings, checked, gaps):
         if sd > 0:
             monotony = statistics.fmean(week) / sd
             strain = sum(week) * monotony
+            # Foster linked illness to monotony > 2.0 TOGETHER WITH high weekly strain (approved 2026-11-26):
+            # a caution only when the last 7 days' load is above the plan's weekly maximum; otherwise info
+            # (with a recovery signal the day is amber anyway, from that signal).
+            top = float((block or {}).get("target_weekly_load_max") or 0)
             if monotony > 2.0:
-                findings.append(_finding("caution", "Load", f"Training monotony {monotony:.1f}",
+                heavy = bool(top) and sum(week) > top
+                findings.append(_finding("caution" if heavy else "info", "Load", f"Training monotony {monotony:.1f}",
                     f"Very similar load every day (weekly strain {strain:.0f}). Foster's research links monotony >2.0 "
-                    "with illness/overuse - add contrast: real easy days and fewer medium days."))
+                    "with illness/overuse when the weekly load is high too"
+                    + (f" - and it is: {sum(week):.0f} over the plan's maximum of {top:.0f}" if heavy
+                       else f" - the load ({sum(week):.0f}) is within the plan, so on its own it doesn't change the day")
+                    + ". Add contrast: real easy days and fewer medium days."))
 
     # Consecutive calendar weeks (Mon-Sun, same as the weekly chart) without a recovery week
     # (load <= 75% of the prior 3 weeks' average). Only completed weeks: the current partial
