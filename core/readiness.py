@@ -42,6 +42,12 @@ EMOJI = {"red": "🔴", "amber": "🟠", "green": "🟢"}
 RANK = {"green": 0, "amber": 1, "red": 2}
 MORNING_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state",
                             "readiness_morning.json")
+# One line a day: the morning verdict next to a fresh one at 13:00 (`log_midday`), to measure how
+# often the frozen morning decision would have come out differently with the day's later data.
+MIDDAY_LOG = os.path.join(os.path.dirname(MORNING_FILE), "readiness_log.jsonl")
+# Intervals.icu fills in a provisional resting HR overnight (often 55-59) until the watch's night
+# arrives (~50). Within this many bpm of the watch's value, the profile has caught up.
+RHR_MATCH_BPM = 2
 
 POOR_SLEEP_SCORE = 70
 VERY_SHORT_SLEEP_HOURS = 5.0   # one night this short is a signal on its own
@@ -157,8 +163,9 @@ def verdict(tsb: float | None, hrv: dict | None, findings: list[dict] | None = N
     return "green", "Good to go"
 
 
-def readiness_context(tsb: float | None) -> dict:
-    """Readiness block for LLM context: verdict, HRV trend, sleep, running limit and the risk findings."""
+def readiness_context(tsb: float | None, hold: bool = True) -> dict:
+    """Readiness block for LLM context: verdict, HRV trend, sleep, running limit and the risk findings.
+    hold=False ignores the frozen morning verdict (the midday log compares against it)."""
     hrv = hrv_status()
     try:
         injury = cached("injury", 300, run_injury_checks)
@@ -178,7 +185,7 @@ def readiness_context(tsb: float | None) -> dict:
     findings = (injury or {}).get("findings", [])
     ill = illness_status()
     level, text = verdict(tsb, hrv, findings, subjective, sleep, ill)
-    morning = morning_verdict()
+    morning = morning_verdict() if hold else None
     held = bool(morning and RANK.get(morning["level"], 0) > RANK[level])
     if held:
         level, text = morning["level"], f"{morning['verdict']} (this morning's check - it holds for the day)"
@@ -201,6 +208,11 @@ def _local_today() -> date:
     return datetime.now(TZ).date()
 
 
+def _local_now() -> str:
+    from core.schedule import TZ
+    return datetime.now(TZ).isoformat(timespec="minutes")
+
+
 def morning_verdict(today: date | None = None) -> dict | None:
     """This morning's stored verdict {date, level, verdict, at}, or None (not today's / none yet)."""
     try:
@@ -211,16 +223,56 @@ def morning_verdict(today: date | None = None) -> dict | None:
     return m if m.get("date") == (today or _local_today()).isoformat() and m.get("level") in RANK else None
 
 
-def freeze_morning(today: date | None = None) -> dict | None:
-    """Stores this morning's verdict (once a day: a later /briefing doesn't replace it)."""
+def night_data(today: date | None = None) -> dict:
+    """Is last night's data in? {ready, missing: [what isn't], tsb, rhr_watch, rhr_intervals}.
+    Ready = today's sleep and HRV from the watch are stored, and Intervals.icu's resting HR has
+    replaced its overnight placeholder (within RHR_MATCH_BPM of the watch's) - that resting HR
+    re-scores every HR-based session's load, so form (TSB) is only final after it."""
+    today = today or _local_today()
+    rows = query("SELECT sleep_end, hrv, resting_hr FROM daily_metrics WHERE day = %s;", (today,))
+    r = rows[0] if rows else {}
+    prof = query("SELECT resting_hr FROM athlete_profile WHERE id = 1;")
+    setting = prof[0]["resting_hr"] if prof else None
+    watch = r.get("resting_hr")
+    missing = []
+    if not r.get("sleep_end"):
+        missing.append("last night's sleep")
+    if r.get("hrv") is None:
+        missing.append("last night's HRV")
+    if watch is None:
+        missing.append("today's resting HR")
+    elif setting is not None and abs(float(setting) - float(watch)) > RHR_MATCH_BPM \
+            and not _set_by_us(setting):
+        missing.append(f"Intervals.icu's updated resting HR (still {setting:.0f} bpm, watch {watch:.0f})")
+    return {"ready": not missing, "missing": missing, "tsb": _tsb(),
+            "rhr_watch": watch and float(watch), "rhr_intervals": setting and float(setting)}
+
+
+def _set_by_us(setting) -> bool:
+    """Intervals still holds the resting HR the bot set (core/resting_hr.py): steady, not a placeholder."""
+    from core.resting_hr import last_set
+    s = last_set()
+    return bool(s and int(s["value"]) == int(setting))
+
+
+def freeze_morning(today: date | None = None, force: bool = True) -> dict | None:
+    """Stores this morning's verdict (once a day: a later /briefing doesn't replace it).
+    force=False stores nothing (returns None) while last night's data isn't in, so an early
+    /briefing doesn't fix the day on placeholders; the scheduled check passes force=True at its
+    cutoff and the verdict then records what was missing."""
     today = today or _local_today()
     if morning_verdict(today):
         return morning_verdict(today)
+    night = night_data(today)
+    if not (night["ready"] or force):
+        return None
     if os.path.exists(MORNING_FILE):
         os.remove(MORNING_FILE)   # yesterday's: compute today's without its floor
     r = current_readiness()
     m = {"date": today.isoformat(), "level": r["level"], "verdict": r["verdict"],
-         "at": datetime.now().astimezone().isoformat(timespec="minutes")}
+         "at": _local_now(),
+         "missing": night["missing"], "tsb": night["tsb"],
+         "rhr_watch": night["rhr_watch"], "rhr_intervals": night["rhr_intervals"]}
     tmp = MORNING_FILE + ".tmp"
     os.makedirs(os.path.dirname(MORNING_FILE), exist_ok=True)
     with open(tmp, "w") as f:
@@ -230,8 +282,29 @@ def freeze_morning(today: date | None = None) -> dict | None:
     return m
 
 
-def current_readiness() -> dict:
-    """readiness_context() with today's form read from the latest daily_metrics row."""
+def _tsb() -> float | None:
     rows = query("SELECT ctl, atl FROM daily_metrics WHERE ctl IS NOT NULL ORDER BY day DESC LIMIT 1;")
-    tsb = float(rows[0]["ctl"]) - float(rows[0]["atl"]) if rows and rows[0]["atl"] is not None else None
-    return readiness_context(tsb)
+    return round(float(rows[0]["ctl"]) - float(rows[0]["atl"]), 1) if rows and rows[0]["atl"] is not None else None
+
+
+def current_readiness(hold: bool = True) -> dict:
+    """readiness_context() with today's form read from the latest daily_metrics row."""
+    return readiness_context(_tsb(), hold)
+
+
+def log_midday(today: date | None = None) -> dict:
+    """Appends {date, morning: {...}, midday: {level, verdict, tsb, rhr...}} to MIDDAY_LOG. Changes
+    nothing: the record of how often the morning decision and the day's later data disagree."""
+    today = today or _local_today()
+    night = night_data(today)
+    r = current_readiness(hold=False)
+    entry = {"date": today.isoformat(), "morning": morning_verdict(today),
+             "midday": {"level": r["level"], "verdict": r["verdict"],
+                        "at": _local_now(),
+                        **{k: night[k] for k in ("tsb", "rhr_watch", "rhr_intervals", "missing")}}}
+    os.makedirs(os.path.dirname(MIDDAY_LOG), exist_ok=True)
+    with open(MIDDAY_LOG, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    m = entry["morning"] or {}
+    logger.info(f"Midday readiness for {today}: morning {m.get('level')} / midday {r['level']}")
+    return entry

@@ -33,8 +33,8 @@ from core.history import MAX_HISTORY_MESSAGES
 from core.schedule import build as build_schedule, markdown as schedule_markdown
 from core.telegram_format import md_to_telegram_html, split_message
 from core.db import load_env
-from core import availability, feedback, strava, workouts
-from core.readiness import freeze_morning
+from core import availability, feedback, resting_hr, strava, workouts
+from core.readiness import freeze_morning, log_midday, morning_verdict, night_data
 from core.next_session import (
     ProposalError, apply_proposal, discard_proposal, latest_decision, replan as replan_next_session, session_line,
     why_line,
@@ -61,6 +61,11 @@ ALLOWED_IDS: set[int] = set()
 LOCAL_TZ = ZoneInfo("Europe/Bratislava")
 DEFAULT_BRIEFING_TIME = "07:00"
 BRIEFING_SYNC_DAYS = 3
+# The morning check waits for last night's data (core/readiness.night_data): from BRIEFING_TIME it
+# syncs every BRIEFING_RETRY_MINUTES and decides once the data is in, or at BRIEFING_CUTOFF anyway.
+BRIEFING_CUTOFF = dtime(10, 0)
+BRIEFING_RETRY_MINUTES = 15
+MIDDAY_LOG_TIME = dtime(13, 0)
 
 # Every command, once: /help and the Telegram "/" menu are both built from this list.
 # (group, command, usage after the command, menu text, help text)
@@ -423,28 +428,37 @@ async def on_strava_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Scheduled morning briefing ---
 # (Activities are synced every 30 min by the host cron hitting /sync-data; the bot sends nothing for them.)
 
-async def deliver_briefing(bot, chat_id: int, chat_data: dict):
+async def deliver_briefing(bot, chat_id: int, chat_data: dict, synced: bool = False, force: bool = False):
     """Syncs, builds the briefing and sends it - and adds it to the chat history, so the
-    athlete can reply with follow-ups ("why rest today?")."""
+    athlete can reply with follow-ups ("why rest today?"). force=True (the scheduled check)
+    fixes the morning verdict even if last night's data isn't complete; a manual /briefing
+    only fixes it once the data is in."""
     stop = asyncio.Event()
     typing = asyncio.create_task(keep_typing(bot, chat_id, stop))
     try:
-        try:
-            await run_sync(BRIEFING_SYNC_DAYS)  # last night's HRV + yesterday's sessions
-        except Exception as e:
-            logger.warning(f"Pre-briefing sync failed, using stored data: {e}")
+        if not synced:
+            try:
+                await run_sync(BRIEFING_SYNC_DAYS)  # last night's HRV + yesterday's sessions
+            except Exception as e:
+                logger.warning(f"Pre-briefing sync failed, using stored data: {e}")
+        morning = None
         try:   # the morning verdict holds for the day (core/readiness.py)
-            await asyncio.to_thread(freeze_morning)
+            morning = await asyncio.to_thread(freeze_morning, None, force)
         except Exception:
             logger.error("Storing the morning readiness failed", exc_info=True)
         text = await build_briefing()
+        if morning and morning.get("missing"):
+            text += ("\n\n_Decided at the " + f"{BRIEFING_CUTOFF:%H:%M}" + " cutoff without "
+                     + ", ".join(morning["missing"]) + "._")
+        elif not morning:
+            text += "\n\n_Last night's data isn't complete yet: this is a preview. The day's decision comes once it's in._"
         await send_markdown_to(bot, chat_id, text)
         get_history(chat_data)  # resets the thread first if it went idle
         remember_turn(chat_data, "(morning briefing)", "ai_coach", text)
         logger.info(f"Briefing sent to {chat_id}.")
         await send_checkin(bot, chat_id)
         try:   # queued / changed workouts go to Intervals.icu now, after the morning check
-            sent = await asyncio.to_thread(workouts.morning_sync, _local_today())
+            sent = morning and await asyncio.to_thread(workouts.morning_sync, _local_today())
             if sent:
                 await bot.send_message(chat_id, "\n".join(sent))
         except Exception:
@@ -459,7 +473,40 @@ async def deliver_briefing(bot, chat_id: int, chat_data: dict):
 
 
 async def job_briefing(context: ContextTypes.DEFAULT_TYPE):
-    await deliver_briefing(context.bot, context.job.chat_id, context.chat_data)
+    """From BRIEFING_TIME: sync, and send the briefing once last night's data is in (or at the
+    cutoff); otherwise check again in BRIEFING_RETRY_MINUTES."""
+    chat_id = context.job.chat_id
+    if await asyncio.to_thread(morning_verdict):
+        return   # already decided today (a /briefing once the data was in)
+    try:
+        await run_sync(BRIEFING_SYNC_DAYS)
+    except Exception as e:
+        logger.warning(f"Pre-briefing sync failed, using stored data: {e}")
+    try:
+        night = await asyncio.to_thread(night_data)
+    except Exception:
+        logger.error("Checking last night's data failed - deciding now", exc_info=True)
+        night = {"ready": True, "missing": []}
+    now = datetime.now(LOCAL_TZ)
+    if night["ready"] or now.time() >= BRIEFING_CUTOFF:
+        await deliver_briefing(context.bot, chat_id, context.chat_data, synced=True, force=True)
+        return
+    logger.info(f"Briefing waits for: {', '.join(night['missing'])}; next check in {BRIEFING_RETRY_MINUTES} min.")
+    context.job_queue.run_once(job_briefing, BRIEFING_RETRY_MINUTES * 60, chat_id=chat_id,
+                               name=f"briefing-retry-{chat_id}")
+
+
+async def job_midday_log(context: ContextTypes.DEFAULT_TYPE):
+    """13:00: log morning vs now (core/readiness.py), then - Mondays and Thursdays - set the
+    Intervals.icu resting HR to the watch's 7-day median (core/resting_hr.py)."""
+    try:
+        await asyncio.to_thread(log_midday)
+    except Exception:
+        logger.error("Midday readiness log failed", exc_info=True)
+    try:
+        await asyncio.to_thread(resting_hr.maybe_set, _local_today())
+    except Exception:
+        logger.error("Setting the Intervals.icu resting HR failed", exc_info=True)
 
 
 # --- Athlete feedback (core/feedback.py): RPE + legs after each session, morning check-in ---
@@ -809,11 +856,17 @@ def main():
 
     hh, mm = (int(x) for x in (env.get("BRIEFING_TIME") or DEFAULT_BRIEFING_TIME).split(":"))
     briefing_at = dtime(hh, mm, tzinfo=LOCAL_TZ)
+    application.job_queue.run_daily(job_midday_log, MIDDAY_LOG_TIME.replace(tzinfo=LOCAL_TZ), name="readiness-midday-log")
     for chat_id in allowed_ids:  # private chat id == user id
         application.job_queue.run_daily(job_briefing, briefing_at, chat_id=chat_id, name=f"briefing-{chat_id}")
+        # a restart during the morning wait picks the check up again (the daily job won't re-fire)
+        now = datetime.now(LOCAL_TZ).time().replace(tzinfo=None)
+        if dtime(hh, mm) <= now < dtime(12, 0) and not morning_verdict():
+            application.job_queue.run_once(job_briefing, 60, chat_id=chat_id, name=f"briefing-retry-{chat_id}")
         application.job_queue.run_repeating(job_session_feedback, FEEDBACK_EVERY_MINUTES * 60, first=60,
                                             chat_id=chat_id, name=f"feedback-{chat_id}")
-    logger.info(f"Briefing scheduled daily at {briefing_at:%H:%M} {LOCAL_TZ.key}; "
+    logger.info(f"Briefing scheduled daily from {briefing_at:%H:%M} {LOCAL_TZ.key} once last night's data is in "
+                f"(cutoff {BRIEFING_CUTOFF:%H:%M}); readiness logged at {MIDDAY_LOG_TIME:%H:%M}; "
                 f"session feedback checked every {FEEDBACK_EVERY_MINUTES} min.")
 
     logger.info(f"Starting Telegram bot for {len(allowed_ids)} allowed user(s)...")

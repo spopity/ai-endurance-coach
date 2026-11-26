@@ -249,6 +249,8 @@ def test_morning_verdict_holds_for_the_day(monkeypatch):
     monkeypatch.setattr(R, "cached", lambda key, ttl, fn: {"findings": [], "overall": "ok"})
     tsb = {"v": -21.0}
     monkeypatch.setattr(R, "current_readiness", lambda: R.readiness_context(tsb["v"]))
+    monkeypatch.setattr(R, "night_data", lambda d=None: {"ready": True, "missing": [], "tsb": tsb["v"],
+                                                         "rhr_watch": 50.0, "rhr_intervals": 50.0})
     assert R.freeze_morning()["level"] == "amber"
     tsb["v"] = -18.0                       # a later sync re-scores the loads: the day stays amber
     r = R.readiness_context(tsb["v"])
@@ -259,3 +261,104 @@ def test_morning_verdict_holds_for_the_day(monkeypatch):
     tsb["v"] = -5.0                        # the next day starts fresh
     today["d"] = date(2026, 11, 27)
     assert R.readiness_context(tsb["v"])["level"] == "green"
+
+
+def _night_rows(monkeypatch, R, row, profile_rhr):
+    def q(sql, params=None):
+        if "athlete_profile" in sql:
+            return [{"resting_hr": profile_rhr}]
+        if "FROM daily_metrics WHERE day" in sql:
+            return [row] if row else []
+        return [{"ctl": 60.0, "atl": 80.0}]
+    monkeypatch.setattr(R, "query", q)
+
+
+def test_night_data_waits_for_the_watch_and_intervals_resting_hr(monkeypatch):
+    from datetime import date, datetime
+    from core import readiness as R
+    d = date(2026, 11, 26)
+    _night_rows(monkeypatch, R, None, 55)                      # 07:00, still asleep: nothing in
+    n = R.night_data(d)
+    assert not n["ready"] and "last night's sleep" in n["missing"] and n["tsb"] == -20.0
+    night = {"sleep_end": datetime(2026, 11, 26, 6, 14), "hrv": 53.0, "resting_hr": 50}
+    _night_rows(monkeypatch, R, night, 55)                     # watch synced, Intervals still 55
+    n = R.night_data(d)
+    assert not n["ready"] and n["missing"] == ["Intervals.icu's updated resting HR (still 55 bpm, watch 50)"]
+    _night_rows(monkeypatch, R, night, 52)                     # within 2 bpm: caught up
+    assert R.night_data(d)["ready"]
+
+
+def test_early_briefing_does_not_fix_the_day_but_the_cutoff_does(monkeypatch):
+    from datetime import date
+    from core import readiness as R
+    d = date(2026, 11, 26)
+    monkeypatch.setattr(R, "_local_today", lambda: d)
+    monkeypatch.setattr(R, "current_readiness", lambda: {"level": "amber", "verdict": "trim"})
+    missing = {"ready": False, "missing": ["last night's sleep"], "tsb": -20.0, "rhr_watch": None, "rhr_intervals": 55.0}
+    monkeypatch.setattr(R, "night_data", lambda d=None: missing)
+    assert R.freeze_morning(force=False) is None and R.morning_verdict() is None   # /briefing at 06:50
+    m = R.freeze_morning(force=True)                                               # 10:00 cutoff
+    assert m["level"] == "amber" and m["missing"] == ["last night's sleep"] and R.morning_verdict() == m
+
+
+def test_midday_log_records_both_verdicts_without_the_hold(monkeypatch, tmp_path):
+    import json
+    from datetime import date
+    from core import readiness as R
+    d = date(2026, 11, 26)
+    monkeypatch.setattr(R, "_local_today", lambda: d)
+    monkeypatch.setattr(R, "MIDDAY_LOG", str(tmp_path / "log.jsonl"))
+    for name in ("hrv_status", "sleep_status", "illness_status", "feedback_signals"):
+        monkeypatch.setattr(R, name, lambda *a, **k: None)
+    monkeypatch.setattr(R, "cached", lambda key, ttl, fn: {"findings": [], "overall": "ok"})
+    tsb = {"v": -21.0}
+    monkeypatch.setattr(R, "_tsb", lambda: tsb["v"])
+    monkeypatch.setattr(R, "night_data", lambda d=None: {"ready": True, "missing": [], "tsb": tsb["v"],
+                                                         "rhr_watch": 50.0, "rhr_intervals": 50.0})
+    R.freeze_morning()
+    tsb["v"] = -18.0                                      # re-scored by 13:00
+    assert R.current_readiness()["level"] == "amber"      # the day still holds
+    R.log_midday()
+    e = json.loads(open(R.MIDDAY_LOG).read().splitlines()[-1])
+    assert e["morning"]["level"] == "amber" and e["morning"]["tsb"] == -21.0
+    assert e["midday"]["level"] == "green" and e["midday"]["tsb"] == -18.0
+
+
+def test_resting_hr_set_twice_a_week_from_the_watch_median(monkeypatch, tmp_path):
+    from datetime import date
+    from core import resting_hr as H
+    monkeypatch.setattr(H, "STATE_FILE", str(tmp_path / "rhr.json"))
+    monkeypatch.setattr(H, "query", lambda sql, p=None: [{"resting_hr": v} for v in (55, 50, 50, 49, 50, 51)])
+    calls, profile = [], {"icu_resting_hr": 55}
+
+    class R:
+        def __init__(self, j): self.j = j
+        def json(self): return self.j
+        def raise_for_status(self): pass
+
+    def api(method, **kw):
+        calls.append((method, kw.get("json")))
+        if method == "PUT":
+            profile.update(kw["json"])
+        return R(dict(profile))
+    monkeypatch.setattr(H, "_api", api)
+    assert H.maybe_set(date(2026, 11, 25)) is None and not calls          # Wednesday: not a set day
+    e = H.maybe_set(date(2026, 11, 30))                                   # Monday: 55 -> median 50
+    assert e["value"] == 50 and e["previous"] == 55 and ("PUT", {"icu_resting_hr": 50}) in calls
+    calls.clear()
+    assert H.maybe_set(date(2026, 12, 3)) is None                         # Thursday, already 50: no write
+    assert [c[0] for c in calls] == ["GET"] and H.last_set()["value"] == 50
+    monkeypatch.setattr(H, "query", lambda sql, p=None: [{"resting_hr": 50}] * 3)
+    assert H.maybe_set(date(2026, 12, 7)) is None                         # too few readings: leave it
+
+
+def test_night_data_accepts_the_resting_hr_the_bot_set(monkeypatch, tmp_path):
+    import json
+    from datetime import date, datetime
+    from core import readiness as R, resting_hr as H
+    monkeypatch.setattr(H, "STATE_FILE", str(tmp_path / "rhr.json"))
+    night = {"sleep_end": datetime(2026, 11, 26, 6, 14), "hrv": 53.0, "resting_hr": 54}   # a high morning
+    _night_rows(monkeypatch, R, night, 50)
+    assert not R.night_data(date(2026, 11, 26))["ready"]          # 50 vs 54, not ours: could be a placeholder
+    json.dump({"value": 50}, open(H.STATE_FILE, "w"))
+    assert R.night_data(date(2026, 11, 26))["ready"]              # our steady value: nothing to wait for
