@@ -32,8 +32,13 @@ reports a compliance %. `match()` finds the pushed workout behind an activity; t
 counts a session at >= 80% compliance as done (core/schedule._done), and the Strava note shows
 the planned workout and the compliance.
 
+Push timing: a workout goes to Intervals.icu only after the morning check of its day
+(morning_sync, run with the briefing). Push before that queues it; the morning check sends it
+built with that morning's readiness, and updates a pushed workout whose steps or duration
+changed since (same event). So nothing has to be deleted from the calendar or the watch.
+
 The state lives in state/workouts/<date>.json: per session the last pushed text, the event id
-on Intervals and the status (draft / pushed / skipped). The workout is rebuilt from the plan on
+on Intervals and the status (draft / queued / pushed / skipped). The workout is rebuilt from the plan on
 every read; when the plan's prescription changed since the push, `changed` is set and Push
 updates the same event (otherwise the pushed text is shown as it is on Intervals). A pushed
 session the plan no longer has (done already, moved) is kept with
@@ -62,6 +67,7 @@ EVENT_TYPE = {"ride": "Ride", "run": "Run", "gym": "WeightTraining"}
 GYM_MINUTES = {"gym_legs": 45, "gym_upper": 35, "gym_core": 25}
 WARMUP_TEST = ("Warm-up test: if HR runs high or the legs feel flat after the warm-up, "
                "ride/run the rest easy instead.")
+AMBER_TRIM = 0.2   # amber: easy sessions ~20% shorter (to the nearest 5 min)
 
 
 class WorkoutError(Exception):
@@ -265,9 +271,11 @@ def _run_blocks(s: dict, wk: str, deload: bool, amber: bool, max_min: int | None
     if k == "long_run" and not detail.startswith("Easy run"):
         m = re.match(r"(\d+)(?:-(\d+))? min", detail)
         mins = (int(m.group(1)) + int(m.group(2) or m.group(1))) // 2 if m else (45 if deload else 65)
+        mins = min(mins, max_min) if max_min else mins
         return f"Long run {mins} min easy", _steady(mins, "Z2 HR", "Z1 HR", max_min, "Conversational")
     mins = int(m.group(1)) if m else 40
     mins = 40 if mins == 35 else mins          # "35-45 min" -> 40
+    mins = min(mins, max_min) if max_min else mins
     b = _steady(mins, "Z2 HR", "Z1 HR", max_min)
     if "strides" in detail:
         b.append(("Strides", 6, [(20, "Z5 HR", "Stride"), (60, "Z1 HR", "Walk/jog")]))
@@ -448,6 +456,9 @@ def build_workout(s: dict, day: dict, week: dict, readiness: str) -> dict:
     deload = bool(week.get("deload"))
     max_min = day.get("max_minutes")
     amber = readiness == "amber" and s["hard"] and sport != "gym"
+    # Amber trims the easy sessions too, ~20% shorter (coach rule 11 - the same session the
+    # "next session" decision names); hard ones lose a rep instead (above).
+    amber_easy = readiness == "amber" and not s["hard"] and sport != "gym" and not s["pinned"]
     notes = [s["note"]] if s.get("note") else []
     conv = pinned_steps(s["detail"], sport) if s["pinned"] and sport != "gym" else None
     if conv:
@@ -458,9 +469,14 @@ def build_workout(s: dict, day: dict, week: dict, readiness: str) -> dict:
         text, name, structured = s["detail"], s["title"], False
         minutes = 30 if deload and k == "gym_legs" else GYM_MINUTES.get(k, 30)
     else:
-        name, blocks = (_ride_blocks if sport == "ride" else _run_blocks)(s, wk, deload, amber, max_min)
+        build = _ride_blocks if sport == "ride" else _run_blocks
+        name, blocks = build(s, wk, deload, amber, max_min)
+        if amber_easy:
+            trimmed = max(20, 5 * round(_total(blocks) / 60 * (1 - AMBER_TRIM) / 5))
+            if trimmed < round(_total(blocks) / 60):
+                name, blocks = build(s, wk, deload, amber, min(max_min or trimmed, trimmed))
         text, minutes, structured = _render(blocks), round(_total(blocks) / 60), True
-        if amber:
+        if amber or amber_easy:
             notes.append(WARMUP_TEST)
     if sport == "ride" and structured:
         text = scale_percent(text, _ftp_scale())
@@ -558,7 +574,7 @@ def _save(state: dict):
     cutoff = date.today() - timedelta(days=KEEP_DAYS)
     for name in os.listdir(STATE_DIR):
         try:
-            if date.fromisoformat(name[:10]) < cutoff:
+            if date.fromisoformat(name.removeprefix("morning-")[:10]) < cutoff:
                 os.remove(os.path.join(STATE_DIR, name))
         except (ValueError, OSError):
             pass
@@ -593,9 +609,10 @@ def for_day(d: date | None = None) -> dict:
         w["status"] = prev.get("status", "draft")
         w["event_id"] = prev.get("event_id")
         w["pushed_at"] = prev.get("pushed_at")
-        # Changed = the plan's prescription changed since the push (not the text: a pushed
-        # workout may have been hand-structured, e.g. a pinned session).
-        w["changed"] = w["status"] == "pushed" and prev.get("plan_detail") != w["plan_detail"]
+        # Changed = the plan's prescription or the workout itself (steps, duration - e.g. trimmed
+        # for amber readiness) differs from what was pushed. The fuel line alone doesn't count.
+        w["changed"] = w["status"] == "pushed" and (prev.get("plan_detail") != w["plan_detail"]
+                                                    or _signature(prev) != _signature(w))
         if w["status"] == "pushed" and not w["changed"]:   # show what is actually on Intervals
             w.update({k: prev[k] for k in ("name", "description", "moving_time_sec", "structured") if k in prev})
         w["in_plan"] = True
@@ -605,6 +622,16 @@ def for_day(d: date | None = None) -> dict:
             current[key] = {**prev, "in_plan": False, "changed": False}
     return {"date": the_day.isoformat(), "weekday": day["weekday"], "status": day["status"],
             "readiness": plan["readiness"], "workouts": list(current.values())}
+
+
+def _steps(description: str | None) -> str:
+    """The workout without its header notes (fuel line, readiness notes)."""
+    text = description or ""
+    return text.split("\n\n", 1)[1] if "\n\n" in text else text
+
+
+def _signature(w: dict) -> tuple:
+    return w.get("name"), w.get("moving_time_sec"), _steps(w.get("description"))
 
 
 def _stored_copy(w: dict) -> dict:
@@ -637,11 +664,32 @@ def _find(d: str | None, kind: str) -> tuple[dict, dict]:
     return day, w
 
 
-def push(d: str | None, kind: str) -> dict:
-    """Creates (or updates) the workout on the Intervals.icu calendar."""
+def _morning_file(d: date) -> str:
+    return os.path.join(STATE_DIR, f"morning-{d.isoformat()}")
+
+
+def morning_done(d: date) -> bool:
+    return os.path.exists(_morning_file(d))
+
+
+def push(d: str | None, kind: str, now: bool = False) -> dict:
+    """Creates (or updates) the workout on the Intervals.icu calendar. A workout for a later
+    day, or for today before the morning check, is queued instead and goes up after the
+    morning check (morning_sync) - built with that morning's readiness, so it doesn't have to
+    be changed or deleted on Intervals (and the watch) later. A workout already on Intervals
+    is updated right away."""
     day, w = _find(d, kind)
     if not w["in_plan"]:
         raise WorkoutError("That session is no longer in the plan - remove it instead.")
+    the_day = date.fromisoformat(day["date"])
+    today = datetime.now(TZ).date()
+    if not now and not w.get("event_id") and (the_day > today or not morning_done(today)):
+        w.update(status="queued", changed=False)
+        state = _load(the_day)
+        state["workouts"][kind] = _stored_copy(w)
+        _save(state)
+        logger.info(f"Queued {kind} for {day['date']} - goes to Intervals.icu after that morning's check.")
+        return {**w, "date": day["date"]}
     body = _event(day["date"], w)
     resp = None
     if w.get("event_id"):
@@ -663,6 +711,7 @@ def push(d: str | None, kind: str) -> dict:
 
 
 def skip(d: str | None, kind: str) -> dict:
+    """Skips the session; a queued one is taken off the queue."""
     day, w = _find(d, kind)
     if w["status"] == "pushed":
         raise WorkoutError("Already on Intervals.icu - use Remove.")
@@ -690,6 +739,34 @@ def remove(d: str | None, kind: str) -> dict:
     _save(state)
     logger.info(f"Removed {kind} for {day['date']} from Intervals.icu.")
     return {**w, "date": day["date"]}
+
+
+def morning_sync(today: date | None = None) -> list[str]:
+    """After the morning check (readiness with last night's sleep/HRV, the re-decided next
+    session): pushes today's queued workouts and updates the ones already on Intervals.icu
+    whose workout changed (same event, so the watch gets the new version). Returns one line
+    per workout sent."""
+    today = today or datetime.now(TZ).date()
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(_morning_file(today), "w") as f:
+        f.write(datetime.now(TZ).isoformat(timespec="minutes"))
+    out = []
+    day = for_day(today)
+    if day["date"] != today.isoformat():
+        return out
+    for w in day["workouts"]:
+        if not w.get("in_plan"):
+            continue
+        if w["status"] == "queued" or (w["status"] == "pushed" and w.get("changed")):
+            was = "updated" if w["status"] == "pushed" else "pushed"
+            try:
+                p = push(today.isoformat(), w["kind"], now=True)
+                mins = f" · {p['moving_time_sec'] // 60} min" if p.get("moving_time_sec") else ""
+                out.append(f"⬆️ {p['name'].replace(' (AI coach)', '')}{mins} - {was} on Intervals.icu")
+            except Exception as e:
+                logger.warning(f"Morning push of {w['kind']} failed: {e}")
+                out.append(f"⚠️ {w['name']} - couldn't reach Intervals.icu ({e}); push it by hand")
+    return out
 
 
 def act(d: str | None, kind: str, action: str) -> dict:
@@ -751,6 +828,7 @@ def telegram_text(day: dict, w: dict) -> str:
     when = f"{day['weekday']} {day['date'][8:]}.{day['date'][5:7]}."
     mins = f" · {w['moving_time_sec'] // 60} min" if w.get("moving_time_sec") else ""
     state = {"pushed": "✅ On Intervals.icu" + (" (plan changed since - Push updates it)" if w.get("changed") else ""),
+             "queued": "⏳ Queued - goes to Intervals.icu after that morning's check",
              "skipped": "✖ Skipped"}.get(w["status"], "")
     if not w.get("in_plan", True):
         state = "⚠️ On Intervals.icu but no longer in the plan"

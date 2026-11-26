@@ -522,17 +522,27 @@ text, and goes onto the Intervals.icu calendar **only when the athlete taps Push
   The steps carry no fuel cues of their own, and the durability test's carbs/h come from the same rule.
   The Strava note's plan comparison (§4.7) gets the steps without this line (`nutrition.without_fuel`):
   the note is public and the grams come from body weight.
-- **Readiness and time:** amber drops one rep of the main set and adds the warm-up test. A
-  "max N min" day shortens the warm-up and cool-down first, then drops reps.
+- **Readiness and time:** amber drops one rep of the main set of a hard session and adds the
+  warm-up test; an easy session (long run, endurance ride) is ~20% shorter, to the nearest
+  5 min, with the warm-up test - the same session the "next session" decision names (coach
+  rule 11). A "max N min" day shortens the warm-up and cool-down first, then drops reps.
+- **Push timing:** a workout reaches Intervals.icu only after the morning check of its day.
+  Push for a later day (or for today before the check) **queues** it; the briefing job runs
+  `morning_sync()` after the re-decided next session and sends the queued workouts, built with
+  that morning's readiness. A workout already on Intervals whose steps or duration changed
+  since (e.g. amber overnight) is updated there, same event, so the watch gets the new version
+  and nothing has to be deleted. `state/workouts/morning-<date>` marks the check as done; after
+  it, Push sends straight away.
 - **Push:** `POST /api/v1/athlete/{id}/events` with category `WORKOUT` and `external_id`
   `aicoach-<date>-<kind>`. Intervals parses the text into steps, so the workout syncs on to
   Garmin or Zwift like any planned workout, and can be downloaded as .zwo/.fit/.mrc.
   Remove deletes the event.
 - **State:** `state/workouts/<date>.json` (kept for 30 days) holds the pushed text,
-  the event id and the status (draft / pushed / skipped).
+  the event id and the status (draft / queued / pushed / skipped).
   - The workout is rebuilt from the plan on every read.
-  - If the plan changes after a push, the workout is marked `changed`, and Push becomes
-    **Update**, which PUTs the same event.
+  - If the plan or the workout itself (name, duration, steps - not the fuel line) changes
+    after a push, the workout is marked `changed`, and Push becomes **Update**, which PUTs the
+    same event; the next morning check does it on its own.
   - If a pushed session is no longer in the plan, it can only be removed.
 
 ### 4.7 Strava coach notes (`core/strava_notes.py`)
@@ -823,7 +833,7 @@ The plan ramps the load and readiness checks it is absorbed; these two close the
 | `.env.example` | The names of every environment variable (DB URLs, Intervals.icu, Garmin, Gemini, Ollama, Withings, Strava, Telegram, optional settings) with no values | The template for the real `.env`; documents what must be configured |
 | `.gitignore` | Excludes secrets, tokens, `logs/`, `state/`, `venv/`, `web/node_modules`, `web/dist` | Keeps credentials and runtime data out of GitHub |
 | `ARCHITECTURE.md` | This document | The map of the system |
-| `tests/` | pytest suite (186 tests): the 7-day plan (spacing, adapting, two sessions on one day, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed), daily carbs, the low-energy check, goals, the adjustment review and the device check. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
+| `tests/` | pytest suite (190 tests): the 7-day plan (spacing, adapting, two sessions on one day, readiness, availability, tests, long-run growth, compliance), readiness/target/injury rules, workout text, queued pushes after the morning check and the pinned-session checker, the gym log, progression levels, the progress check, durability, the aerobic Build gate and the FTP rule, workout fueling, impact load, the Strava facts line, the illness early warning and the check-in, the test calendar and the thresholds (DFA-alpha1, LT1, Zone 2, critical speed), daily carbs, the low-energy check, goals, the adjustment review and the device check. Everything the code would read is patched in - no database, files or APIs | Changing one rule can't quietly break another; run before every commit |
 | `requirements-dev.txt` | pytest | Test runner only |
 | `requirements.txt` | Pinned Python dependencies (FastAPI, LangGraph/LangChain, Ollama + Gemini bindings, psycopg2, python-telegram-bot…) | Makes the `venv` reproducible |
 | `app.py` | The FastAPI app: serves the React dashboard and PWA files, the `/classic` chat page, `/chat` SSE streaming and `/sync-data`; includes the `/api` router and the login (`core/web_auth.py`) | The main web process and the target of the 30-min sync cron |

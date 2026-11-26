@@ -50,11 +50,13 @@ export function PmcChart({ refreshKey, compact = false }: { refreshKey: number; 
     const zr = chart.getZr();
     const at = (x: number, y: number) => {
       const rows = dataRef.current;
-      if (!rows?.length || !chart.containPixel({ gridIndex: [0, 1] }, [x, y])) return null;
-      const i = chart.convertFromPixel({ xAxisIndex: 0 }, [x, y]) as unknown as number[] | number;
-      return activityFor(rows, Math.round(Array.isArray(i) ? i[0] : i));
+      if (!rows?.length) return null;
+      // The panel under the mouse (fitness/fatigue on top, form below); its x is the day's index.
+      const grid = [0, 1].find((g) => chart.containPixel({ gridIndex: g }, [x, y]));
+      if (grid === undefined) return null;
+      const p = chart.convertFromPixel({ gridIndex: grid }, [x, y]) as number[] | null;
+      return p ? activityFor(rows, Math.round(p[0])) : null;
     };
-    zr.on("mousemove", (e) => zr.setCursorStyle(at(e.offsetX, e.offsetY) ? "pointer" : "default"));
     zr.on("click", (e) => {
       const a = at(e.offsetX, e.offsetY);
       if (a) window.open(INTERVALS_ACTIVITY + a.id, "_blank", "noopener");

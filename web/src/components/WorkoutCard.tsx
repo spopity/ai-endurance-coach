@@ -133,6 +133,8 @@ function StatusChip({ w }: { w: Workout }) {
         On Intervals.icu{w.changed ? <span className="text-amber-300"> · plan changed since</span> : null}
       </span>
     );
+  if (w.status === "queued")
+    return <span className="text-sky-300">Queued · goes to Intervals.icu after that morning's check</span>;
   if (w.status === "skipped") return <span className="text-slate-500">Skipped</span>;
   return <span className="text-slate-500">Not pushed yet</span>;
 }
@@ -157,18 +159,18 @@ function WorkoutRow({ w, busy, act }: { w: Workout; busy: string | null; act: (w
           </div>
         </div>
         <div className="flex shrink-0 gap-1.5">
-          {(!pushed || (w.changed && w.in_plan)) && (
+          {((!pushed && w.status !== "queued") || (w.changed && w.in_plan)) && (
             <button className={`${btn} bg-orange-500/15 text-orange-200 ring-orange-400/30 hover:bg-orange-500/25`}
               disabled={busy !== null} onClick={() => act(w, "push")}>
               <CloudUpload size={13} />
-              {busy === w.kind + "push" ? "Pushing…" : w.changed ? "Update" : "Push to Intervals"}
+              {busy === w.kind + "push" ? "Sending…" : w.changed ? "Update" : "Push to Intervals"}
             </button>
           )}
           {!pushed && w.status !== "skipped" && (
             <button className={`${btn} text-slate-300 ring-white/10 hover:bg-white/[0.05]`} disabled={busy !== null}
               onClick={() => act(w, "skip")}>
               <X size={13} />
-              Skip
+              {w.status === "queued" ? "Cancel" : "Skip"}
             </button>
           )}
           {pushed && (

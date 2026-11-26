@@ -438,6 +438,12 @@ async def deliver_briefing(bot, chat_id: int, chat_data: dict):
         remember_turn(chat_data, "(morning briefing)", "ai_coach", text)
         logger.info(f"Briefing sent to {chat_id}.")
         await send_checkin(bot, chat_id)
+        try:   # queued / changed workouts go to Intervals.icu now, after the morning check
+            sent = await asyncio.to_thread(workouts.morning_sync, _local_today())
+            if sent:
+                await bot.send_message(chat_id, "\n".join(sent))
+        except Exception:
+            logger.error("Morning workout sync failed", exc_info=True)
         await send_workouts(bot, chat_id, on_day=_local_today(), only_open=True)
     except Exception as e:
         logger.error("Briefing failed", exc_info=True)
@@ -669,6 +675,8 @@ def workout_buttons(day: str, w: dict) -> InlineKeyboardMarkup | None:
     cb = lambda action: f"wo:{action}:{day}:{w['kind']}"
     if not w.get("in_plan", True):
         return InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Remove from Intervals", callback_data=cb("remove"))]])
+    if w["status"] == "queued":
+        return InlineKeyboardMarkup([[InlineKeyboardButton("✖ Cancel", callback_data=cb("skip"))]])
     if w["status"] == "pushed":
         row = [InlineKeyboardButton("🗑 Remove", callback_data=cb("remove"))]
         if w.get("changed"):
@@ -713,7 +721,7 @@ async def on_workout_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await button_allowed(update):
         return
     _, action, day, kind = query.data.split(":", 3)
-    await query.answer({"push": "Pushing to Intervals.icu...", "remove": "Removing...", "skip": "Skipped."}.get(action))
+    await query.answer({"push": "Sending to Intervals.icu (or queued for the morning check)...", "remove": "Removing...", "skip": "Skipped."}.get(action))
     try:
         w = await asyncio.to_thread(workouts.act, day, kind, action)
         d = await asyncio.to_thread(workouts.for_day, date.fromisoformat(day))

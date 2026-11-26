@@ -172,3 +172,68 @@ def test_workout_starts_with_fuel_line():
     w = W.build_workout(session("bike_q", BIKE_DETAILS[4]), DAY, WEEK, "green")
     first = w["description"].split("\n\n")[0]
     assert first.splitlines()[-1].startswith("Fuel: ~105 g carbs 2-3 h before")
+
+
+# --- amber on easy sessions, change detection, push timing ---
+
+def test_amber_trims_an_easy_long_run_by_a_fifth():
+    s = session("long_run", "75-80 min easy, HR under 149, conversational", "run", hard=False)
+    w = W.build_workout(s, DAY, WEEK, "amber")
+    assert w["moving_time_sec"] == 60 * 60 and w["name"].startswith("Long run 60 min")
+    assert W.WARMUP_TEST in w["description"]
+    assert W.build_workout(s, DAY, WEEK, "green")["moving_time_sec"] == 77 * 60
+
+
+def test_a_shorter_workout_counts_as_changed_but_a_new_fuel_line_doesnt():
+    s = session("long_run", "75-80 min easy, HR under 149, conversational", "run", hard=False)
+    green, amber = W.build_workout(s, DAY, WEEK, "green"), W.build_workout(s, DAY, WEEK, "amber")
+    assert W._signature(green) != W._signature(amber)
+    refuel = dict(green, description="Fuel: other numbers\n\n" + W._steps(green["description"]))
+    assert W._signature(green) == W._signature(refuel)
+
+
+@pytest.fixture
+def one_day(tmp_path, monkeypatch):
+    """A plan with one long run today; Intervals.icu calls recorded instead of sent."""
+    from datetime import datetime
+    today = datetime.now(W.TZ).date()
+    monkeypatch.setattr(W, "STATE_DIR", str(tmp_path))
+    level = {"readiness": "green"}
+    day = {"date": today.isoformat(), "weekday": "Thu", "status": "available", "max_minutes": None,
+           "sessions": [session("long_run", "75-80 min easy, HR under 149, conversational", "run", hard=False)]}
+    monkeypatch.setattr(W, "_plan_day", lambda d: (day, {"weeks": [], "readiness": level["readiness"]}))
+    monkeypatch.setattr(W, "_week_kind", lambda monday: ("build_2", None))
+    monkeypatch.setattr(W, "_weight", lambda: 70)
+    calls = []
+
+    class Resp:
+        status_code = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return {"id": 42, **self.body}
+    monkeypatch.setattr(W, "_api", lambda method, path, **kw: calls.append((method, path, kw.get("json"))) or Resp(kw.get("json") or {}))
+    return today, level, calls
+
+
+def test_push_before_the_morning_check_is_queued_then_sent(one_day):
+    today, level, calls = one_day
+    assert W.push(today.isoformat(), "long_run")["status"] == "queued" and calls == []
+    level["readiness"] = "amber"                     # the morning check: amber
+    sent = W.morning_sync(today)
+    assert len(calls) == 1 and calls[0][0] == "POST" and calls[0][2]["moving_time"] == 60 * 60
+    assert "pushed" in sent[0] and W.for_day(today)["workouts"][0]["status"] == "pushed"
+
+
+def test_morning_check_updates_a_workout_pushed_the_day_before(one_day):
+    today, level, calls = one_day
+    W.morning_sync(today)                            # morning done, green: the push goes straight up
+    W.push(today.isoformat(), "long_run")
+    assert calls[-1][0] == "POST" and calls[-1][2]["moving_time"] == 77 * 60
+    level["readiness"] = "amber"                     # readiness turns amber: the same event is updated
+    assert W.for_day(today)["workouts"][0]["changed"]
+    sent = W.morning_sync(today)
+    assert calls[-1][:2] == ("PUT", "/events/42") and calls[-1][2]["moving_time"] == 60 * 60
+    assert "updated" in sent[0] and not W.for_day(today)["workouts"][0]["changed"]

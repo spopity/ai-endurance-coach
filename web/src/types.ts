@@ -291,7 +291,7 @@ export interface WeekAhead {
   dropped: { week: string; session: string }[];
 }
 
-export type WorkoutStatus = "draft" | "pushed" | "skipped";
+export type WorkoutStatus = "draft" | "queued" | "pushed" | "skipped";
 
 export interface Workout {
   kind: string;

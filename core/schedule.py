@@ -814,6 +814,8 @@ def build(today: date | None = None, readiness: dict | None = None) -> dict:
             note = None
             if day is first and k in HARD and SPORT[k] != "gym" and level == "amber":
                 note = "amber readiness: trim it ~20% and start with the warm-up test"
+            elif day is first and SPORT[k] != "gym" and level == "amber" and not pinned:
+                note = "amber readiness: ~20% shorter, start with the warm-up test"
             if day is first and level == "red" and not pinned:
                 note = "red readiness: keep it easy and short, or rest"
             if day is frozen and level == "red":
